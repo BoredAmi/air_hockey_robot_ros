@@ -1,0 +1,3 @@
+uint64 timestamp
+bool is_detected
+sensor_msgs/Image image_frame

@@ -1,0 +1,9 @@
+config.json
+
+/log/
+/logs/
+/build/
+/install/
+/.claude/
+/src/pc_node/build/
+/tools/

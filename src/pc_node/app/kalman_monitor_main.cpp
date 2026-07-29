@@ -19,6 +19,7 @@
 #include <mutex>
 #include <cmath>
 #include <numeric>
+#include <filesystem>
 
 namespace {
 
@@ -196,6 +197,15 @@ int main(int argc, char** argv) {
     float latestActualAngle = 0.0f;
     bool hasActualAngle = false;
 
+    // Snapshot the whole canvas each time a new defensive move starts (predValid
+    // false->true), so we get one image per attack showing where the puck was and
+    // what angle/timing was in play - for bottleneck hunting after the fact.
+    const std::filesystem::path snapshotDir = "logs/kalman_snapshots";
+    std::filesystem::create_directories(snapshotDir);
+    bool prevPredValid = false;
+    bool pendingSnapshot = false;
+    uint64_t snapshotPuckTimestamp = 0;
+
     auto detection_sub = node->create_subscription<air_hockey_robot_msgs::msg::PuckDetection>(
         "/puck/detection", rclcpp::QoS(rclcpp::KeepLast(5)).best_effort(),
         [&](const air_hockey_robot_msgs::msg::PuckDetection::SharedPtr msg) {
@@ -225,6 +235,12 @@ int main(int argc, char** argv) {
             latestFiltered.timeToEntry = msg->time_to_entry;
             latestFiltered.timestamp = msg->timestamp;
             hasFiltered = true;
+
+            if (msg->valid && !prevPredValid) {
+                pendingSnapshot = true;
+                snapshotPuckTimestamp = msg->timestamp;
+            }
+            prevPredValid = msg->valid;
 
             float speed = std::hypot(msg->vx, msg->vy);
             speedGraph.push(speed);
@@ -380,6 +396,16 @@ int main(int argc, char** argv) {
             speedGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H)); y += GRAPH_H + GRAPH_GAP;
             confGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H)); y += GRAPH_H + GRAPH_GAP;
             angleGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H));
+
+            if (pendingSnapshot) {
+                char filename[128];
+                snprintf(filename, sizeof(filename), "attack_%llu.png",
+                    static_cast<unsigned long long>(snapshotPuckTimestamp));
+                std::filesystem::path outPath = snapshotDir / filename;
+                cv::imwrite(outPath.string(), canvas);
+                std::cout << "Saved defense snapshot: " << outPath.string() << std::endl;
+                pendingSnapshot = false;
+            }
         }
 
         cv::imshow("Kalman Monitor", canvas);

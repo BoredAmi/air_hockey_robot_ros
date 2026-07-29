@@ -28,6 +28,7 @@ private:
 
     rclcpp::Subscription<air_hockey_robot_msgs::msg::PredictedEntry>::SharedPtr entry_sub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr angle_pub_;
+    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr actual_angle_pub_;
     rclcpp::TimerBase::SharedPtr angle_pub_timer_;
 
     double min_speed_for_robot_mm_s_;

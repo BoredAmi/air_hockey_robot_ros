@@ -35,6 +35,7 @@ public:
     void stop();
     cv::Point2f TableToRobotCoordinates(cv::Point2f tablePosition);
     float getSentAngle() const;
+    float getActualAngle() const;
 
 private:
     bool startEgmServer();
@@ -65,8 +66,7 @@ private:
     std::mutex targetMutex_;
     cv::Point2f targetTablePosition_{-1.0f, -1.0f};
 
-    float smoothedAngle_ = 0.0f;
-    static constexpr float ANGLE_SMOOTHING_ALPHA = 0.08f;
     std::atomic<float> lastSentAngle_{0.0f};
+    std::atomic<float> lastActualAngle_{0.0f};
 };
 #endif // MOVEMENT_HPP

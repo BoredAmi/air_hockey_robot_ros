@@ -28,8 +28,8 @@ struct RawSample {
 };
 
 struct FilteredSample {
-    cv::Point2f pos;      // puck_x, puck_y - wygladzona pozycja z Kalmana
-    cv::Point2f vel;      // vx, vy
+    cv::Point2f pos;      
+    cv::Point2f vel;      
     float confidence;
     bool predValid;
     cv::Point2f predEntry;
@@ -37,15 +37,18 @@ struct FilteredSample {
     uint64_t timestamp;
 };
 
-// Prosty scrollujacy wykres rysowany od zera co klatke - wystarczajaco tanie
-// przy rozsadnej dlugosci historii (kilkaset probek).
 struct GraphStrip {
     std::string label;
     std::deque<float> values;
     size_t maxSamples;
-    float fixedMin;   // jesli fixedMin < fixedMax, uzywamy stalej skali (np. confidence 0-1)
+    float fixedMin;   
     float fixedMax;
     cv::Scalar color;
+
+    std::deque<float> values2;
+    std::string label2;
+    cv::Scalar color2{0, 0, 0};
+    bool hasSecond = false;
 
     explicit GraphStrip(const std::string& lbl, cv::Scalar col, size_t maxN = 300,
                          float fMin = 1.0f, float fMax = 0.0f)
@@ -54,6 +57,17 @@ struct GraphStrip {
     void push(float v) {
         values.push_back(v);
         if (values.size() > maxSamples) values.pop_front();
+    }
+
+    void enableSecond(const std::string& lbl2, cv::Scalar col2) {
+        label2 = lbl2;
+        color2 = col2;
+        hasSecond = true;
+    }
+
+    void pushSecond(float v) {
+        values2.push_back(v);
+        if (values2.size() > maxSamples) values2.pop_front();
     }
 
     void draw(cv::Mat& canvas, cv::Rect area) const {
@@ -69,13 +83,11 @@ struct GraphStrip {
             vmin = *std::min_element(values.begin(), values.end());
             vmax = *std::max_element(values.begin(), values.end());
             if (std::abs(vmax - vmin) < 1e-6f) { vmin -= 1.0f; vmax += 1.0f; }
-            // Troche marginesu, zeby wykres nie dotykal krawedzi
             float pad = (vmax - vmin) * 0.1f;
             vmin -= pad;
             vmax += pad;
         }
 
-        // Linia zera (jesli miesci sie w zakresie) - przydatne dla bledow X/Y
         if (vmin < 0.0f && vmax > 0.0f) {
             int zeroY = area.y + static_cast<int>(area.height * (1.0f - (0.0f - vmin) / (vmax - vmin)));
             cv::line(canvas, cv::Point(area.x, zeroY), cv::Point(area.x + area.width, zeroY),
@@ -96,6 +108,20 @@ struct GraphStrip {
             cv::polylines(canvas, pts, false, color, 2, cv::LINE_AA);
         }
 
+        if (hasSecond && values2.size() >= 2) {
+            std::vector<cv::Point> pts;
+            pts.reserve(values2.size());
+            for (size_t i = 0; i < values2.size(); ++i) {
+                float t = static_cast<float>(i) / static_cast<float>(maxSamples - 1);
+                int x = area.x + static_cast<int>(t * area.width);
+                float norm = (values2[i] - vmin) / (vmax - vmin);
+                norm = std::clamp(norm, 0.0f, 1.0f);
+                int y = area.y + static_cast<int>(area.height * (1.0f - norm));
+                pts.emplace_back(x, y);
+            }
+            cv::polylines(canvas, pts, false, color2, 2, cv::LINE_AA);
+        }
+
         char rangeBuf[64];
         snprintf(rangeBuf, sizeof(rangeBuf), "%.1f", vmax);
         cv::putText(canvas, rangeBuf, cv::Point(area.x + 4, area.y + 14),
@@ -105,6 +131,10 @@ struct GraphStrip {
                     cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(150, 150, 150), 1);
         cv::putText(canvas, label, cv::Point(area.x + area.width - 140, area.y + 16),
                     cv::FONT_HERSHEY_SIMPLEX, 0.5, color, 1);
+        if (hasSecond) {
+            cv::putText(canvas, label2, cv::Point(area.x + area.width - 140, area.y + 34),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.5, color2, 1);
+        }
 
         if (!values.empty()) {
             double sumSq = 0.0;
@@ -159,9 +189,12 @@ int main(int argc, char** argv) {
     GraphStrip speedGraph("predkosc (mm/s)", cv::Scalar(0, 255, 0));
     GraphStrip confGraph("confidence", cv::Scalar(255, 100, 100), 300, 0.0f, 1.0f);
     GraphStrip angleGraph("wyslany kat J1 (deg)", cv::Scalar(180, 0, 255), 300, -41.0f, 41.0f);
+    angleGraph.enableSecond("rzeczywisty kat J1 (deg)", cv::Scalar(0, 255, 120));
 
     float latestSentAngle = 0.0f;
     bool hasSentAngle = false;
+    float latestActualAngle = 0.0f;
+    bool hasActualAngle = false;
 
     auto detection_sub = node->create_subscription<air_hockey_robot_msgs::msg::PuckDetection>(
         "/puck/detection", rclcpp::QoS(rclcpp::KeepLast(5)).best_effort(),
@@ -214,6 +247,15 @@ int main(int argc, char** argv) {
             latestSentAngle = msg->data;
             hasSentAngle = true;
             angleGraph.push(latestSentAngle);
+        });
+
+    auto actual_angle_sub = node->create_subscription<std_msgs::msg::Float32>(
+        "/robot/actual_angle", rclcpp::QoS(rclcpp::KeepLast(5)).best_effort(),
+        [&](const std_msgs::msg::Float32::SharedPtr msg) {
+            std::lock_guard<std::mutex> lk(data_mutex);
+            latestActualAngle = msg->data;
+            hasActualAngle = true;
+            angleGraph.pushSecond(latestActualAngle);
         });
 
     const int TABLE_VIEW_W = 900;
@@ -305,7 +347,6 @@ int main(int argc, char** argv) {
                 cv::putText(canvas, "kalman", tableToView(latestFiltered.pos) + cv::Point(10, -10),
                             cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 120, 0), 1);
 
-                // Wektor predkosci - skalowany wizualnie (predkosc w mm/s / 5 -> px)
                 cv::Point vTip = tableToView(latestFiltered.pos +
                     cv::Point2f(latestFiltered.vel.x * 0.2f, latestFiltered.vel.y * 0.2f));
                 cv::arrowedLine(canvas, tableToView(latestFiltered.pos), vTip,
@@ -323,14 +364,16 @@ int main(int argc, char** argv) {
             }
 
             char statsBuf[256];
-            snprintf(statsBuf, sizeof(statsBuf), "conf: %.2f  speed: %.1f mm/s  sent J1: %.1f deg",
+            snprintf(statsBuf, sizeof(statsBuf),
+                "conf: %.2f  speed: %.1f mm/s  sent J1: %.1f deg  actual J1: %.1f deg  err: %.1f deg",
                 hasFiltered ? latestFiltered.confidence : 0.0f,
                 hasFiltered ? std::hypot(latestFiltered.vel.x, latestFiltered.vel.y) : 0.0f,
-                hasSentAngle ? latestSentAngle : 0.0f);
+                hasSentAngle ? latestSentAngle : 0.0f,
+                hasActualAngle ? latestActualAngle : 0.0f,
+                (hasSentAngle && hasActualAngle) ? (latestSentAngle - latestActualAngle) : 0.0f);
             cv::putText(canvas, statsBuf, cv::Point(MARGIN, TABLE_VIEW_H - 8),
                         cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(220, 220, 220), 1);
 
-            // --- Wykresy ---
             int y = TABLE_VIEW_H + GRAPH_GAP;
             errXGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H)); y += GRAPH_H + GRAPH_GAP;
             errYGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H)); y += GRAPH_H + GRAPH_GAP;
@@ -349,6 +392,7 @@ int main(int argc, char** argv) {
             speedGraph.values.clear();
             confGraph.values.clear();
             angleGraph.values.clear();
+            angleGraph.values2.clear();
             rawTrail.clear();
             filteredTrail.clear();
             rawByTimestamp.clear();

@@ -97,6 +97,16 @@ void TrajectoryNode::detection_callback(const air_hockey_robot_msgs::msg::PuckDe
     out.time_to_entry = -1.0f;
 
     if (!msg->is_detected) {
+        if (predictor_) {
+            cv::Point2f smoothedPos = predictor_->getCurrentPosition();
+            cv::Point2f velocity = predictor_->getVelocity();
+            out.puck_x = smoothedPos.x;
+            out.puck_y = smoothedPos.y;
+            out.vx = velocity.x;
+            out.vy = velocity.y;
+            out.puck_in_defense_zone = predictor_->isInDefenseZone(smoothedPos);
+            out.defense_zone_index = static_cast<int8_t>(config_.WHERE_DEFENSE_ZONE);
+        }
         entry_pub_->publish(out);
         return;
     }

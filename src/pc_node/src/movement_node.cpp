@@ -18,12 +18,18 @@ MovementNode::MovementNode(const rclcpp::NodeOptions & options)
 
     angle_pub_ = this->create_publisher<std_msgs::msg::Float32>(
         "/robot/sent_angle", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
+    actual_angle_pub_ = this->create_publisher<std_msgs::msg::Float32>(
+        "/robot/actual_angle", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
     angle_pub_timer_ = this->create_wall_timer(
         std::chrono::milliseconds(20),
         [this]() {
-            std_msgs::msg::Float32 msg;
-            msg.data = mover_.getSentAngle();
-            angle_pub_->publish(msg);
+            std_msgs::msg::Float32 sent_msg;
+            sent_msg.data = mover_.getSentAngle();
+            angle_pub_->publish(sent_msg);
+
+            std_msgs::msg::Float32 actual_msg;
+            actual_msg.data = mover_.getActualAngle();
+            actual_angle_pub_->publish(actual_msg);
         });
 
     RCLCPP_INFO(this->get_logger(),

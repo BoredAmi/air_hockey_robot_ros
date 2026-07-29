@@ -91,6 +91,10 @@ float MovementController::getSentAngle() const {
     return lastSentAngle_.load();
 }
 
+float MovementController::getActualAngle() const {
+    return lastActualAngle_.load();
+}
+
 void MovementController::stop() {
     if (isRunning_) {
         isRunning_ = false; 
@@ -127,6 +131,9 @@ void MovementController::egmWorkerLoop() {
                 for (int i = 0; i < 6 && i < joints.joints_size(); ++i) {
                     currentJoints[i] = joints.joints(i);
                 }
+                if (joints.joints_size() > 0) {
+                    lastActualAngle_.store(static_cast<float>(joints.joints(0)));
+                }
                 hasFeedback = true;
             }
         }
@@ -156,10 +163,8 @@ void MovementController::egmWorkerLoop() {
         // Test if robot is scaled correctly
        // target_angle=30.0f;
 
-        // Ease toward the target instead of snapping to it every cycle - the raw
-        // target angle jitters between successive trajectory predictions.
-        smoothedAngle_ += ANGLE_SMOOTHING_ALPHA * (target_angle - smoothedAngle_);
-        float sent_angle = smoothedAngle_;
+
+        float sent_angle = target_angle;
         lastSentAngle_.store(sent_angle);
 
         std::cout << "EGM MOVE: x=" << x << " y=" << y << " target_angle=" << target_angle

@@ -154,7 +154,26 @@ void MovementController::egmWorkerLoop() {
         }
 
         bool haveTarget = (localTarget.x >= 0 && localTarget.y >= 0);
-        cv::Point2f targetTable = haveTarget ? localTarget : idleTablePosition();
+        cv::Point2f normalTargetTable = haveTarget ? localTarget : idleTablePosition();
+        cv::Point2f normalTargetRobot = TableToRobotCoordinates(normalTargetTable);
+
+        cv::Point2f actualRobotNow(lastActualRobotX_.load(), lastActualRobotY_.load());
+
+        if (motionPhase_ == MotionPhase::Striking &&
+            std::chrono::steady_clock::now() - strikeStartTime_ >= STRIKE_HOLD_DURATION) {
+            motionPhase_ = MotionPhase::Tracking;
+        }
+
+        if (motionPhase_ == MotionPhase::Tracking && haveTarget &&
+            cv::norm(actualRobotNow - normalTargetRobot) <= ARRIVAL_TOLERANCE_MM) {
+            motionPhase_ = MotionPhase::Striking;
+            strikeBaseTable_ = normalTargetTable;
+            strikeStartTime_ = std::chrono::steady_clock::now();
+        }
+
+        cv::Point2f targetTable = (motionPhase_ == MotionPhase::Striking)
+            ? cv::Point2f(strikeBaseTable_.x - STRIKE_FORWARD_MM, strikeBaseTable_.y)
+            : normalTargetTable;
         cv::Point2f targetRobot = TableToRobotCoordinates(targetTable);
 
         lastSentRobotX_.store(targetRobot.x);

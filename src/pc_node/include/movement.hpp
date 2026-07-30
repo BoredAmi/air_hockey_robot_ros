@@ -11,6 +11,7 @@
 #include <mutex>
 #include <atomic>
 #include <vector>
+#include <chrono>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -48,6 +49,15 @@ private:
     void egmWorkerLoop();
 
     cv::Point2f idleTablePosition() const;
+
+
+    enum class MotionPhase { Tracking, Striking };
+    MotionPhase motionPhase_ = MotionPhase::Tracking;
+    cv::Point2f strikeBaseTable_{-1.0f, -1.0f};
+    std::chrono::steady_clock::time_point strikeStartTime_;
+    static constexpr float ARRIVAL_TOLERANCE_MM = 20.0f;
+    static constexpr float STRIKE_FORWARD_MM = 70.0f;
+    static constexpr std::chrono::milliseconds STRIKE_HOLD_DURATION{150};
 
     Config config_;
     uint64_t egm_seqno;

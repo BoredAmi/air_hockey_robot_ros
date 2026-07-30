@@ -33,14 +33,21 @@ public:
 
     bool moveTo(cv::Point2f tablePosition);
     void stop();
-    cv::Point2f TableToRobotCoordinates(cv::Point2f tablePosition);
-    float getSentAngle() const;
-    float getActualAngle() const;
+    cv::Point2f TableToRobotCoordinates(cv::Point2f tablePosition) const;
+    cv::Point2f RobotToTableCoordinates(cv::Point2f robotPosition) const;
+
+    cv::Point2f getSentPosition() const;
+    cv::Point2f getActualPosition() const;
+
+    cv::Point2f getSentPositionRobotFrame() const;
+    cv::Point2f getActualPositionRobotFrame() const;
 
 private:
     bool startEgmServer();
     void disconnect();
-    void egmWorkerLoop(); 
+    void egmWorkerLoop();
+
+    cv::Point2f idleTablePosition() const;
 
     Config config_;
     uint64_t egm_seqno;
@@ -59,14 +66,16 @@ private:
         socklen_t robotAddrLen;
     #endif
 
-    std::vector<double> currentJoints;
-
     std::thread egmThread_;
     std::atomic<bool> isRunning_{false};
     std::mutex targetMutex_;
     cv::Point2f targetTablePosition_{-1.0f, -1.0f};
 
-    std::atomic<float> lastSentAngle_{0.0f};
-    std::atomic<float> lastActualAngle_{0.0f};
+    // Robot-frame (post TableToRobotCoordinates) mm, so the send loop doesn't need a lock
+    // to read these back out for telemetry.
+    std::atomic<float> lastSentRobotX_{0.0f};
+    std::atomic<float> lastSentRobotY_{0.0f};
+    std::atomic<float> lastActualRobotX_{0.0f};
+    std::atomic<float> lastActualRobotY_{0.0f};
 };
 #endif // MOVEMENT_HPP

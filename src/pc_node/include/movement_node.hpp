@@ -2,7 +2,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <air_hockey_robot_msgs/msg/predicted_entry.hpp>
-#include <std_msgs/msg/float32.hpp>
+#include <std_msgs/msg/float32_multi_array.hpp>
 
 #include "config.hpp"
 #include "movement.hpp"
@@ -27,9 +27,10 @@ private:
     MovementController mover_;
 
     rclcpp::Subscription<air_hockey_robot_msgs::msg::PredictedEntry>::SharedPtr entry_sub_;
-    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr angle_pub_;
-    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr actual_angle_pub_;
-    rclcpp::TimerBase::SharedPtr angle_pub_timer_;
+    // [x, y] in table mm, published for visualization/telemetry.
+    rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr sent_position_pub_;
+    rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr actual_position_pub_;
+    rclcpp::TimerBase::SharedPtr position_pub_timer_;
 
     double min_speed_for_robot_mm_s_;
     double defense_zone_buffer_mm_;

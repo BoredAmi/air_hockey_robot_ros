@@ -16,20 +16,25 @@ MovementNode::MovementNode(const rclcpp::NodeOptions & options)
         sub_qos,
         std::bind(&MovementNode::entry_callback, this, std::placeholders::_1));
 
-    angle_pub_ = this->create_publisher<std_msgs::msg::Float32>(
-        "/robot/sent_angle", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
-    actual_angle_pub_ = this->create_publisher<std_msgs::msg::Float32>(
-        "/robot/actual_angle", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
-    angle_pub_timer_ = this->create_wall_timer(
+    sent_position_pub_ = this->create_publisher<std_msgs::msg::Float32MultiArray>(
+        "/robot/sent_position", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
+    actual_position_pub_ = this->create_publisher<std_msgs::msg::Float32MultiArray>(
+        "/robot/actual_position", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
+    position_pub_timer_ = this->create_wall_timer(
         std::chrono::milliseconds(20),
         [this]() {
-            std_msgs::msg::Float32 sent_msg;
-            sent_msg.data = mover_.getSentAngle();
-            angle_pub_->publish(sent_msg);
+            // Layout: [tableX, tableY, robotX, robotY]
+            cv::Point2f sentTable = mover_.getSentPosition();
+            cv::Point2f sentRobot = mover_.getSentPositionRobotFrame();
+            std_msgs::msg::Float32MultiArray sent_msg;
+            sent_msg.data = {sentTable.x, sentTable.y, sentRobot.x, sentRobot.y};
+            sent_position_pub_->publish(sent_msg);
 
-            std_msgs::msg::Float32 actual_msg;
-            actual_msg.data = mover_.getActualAngle();
-            actual_angle_pub_->publish(actual_msg);
+            cv::Point2f actualTable = mover_.getActualPosition();
+            cv::Point2f actualRobot = mover_.getActualPositionRobotFrame();
+            std_msgs::msg::Float32MultiArray actual_msg;
+            actual_msg.data = {actualTable.x, actualTable.y, actualRobot.x, actualRobot.y};
+            actual_position_pub_->publish(actual_msg);
         });
 
     RCLCPP_INFO(this->get_logger(),
@@ -97,9 +102,6 @@ bool MovementNode::computePuckTooCloseToZone(int8_t zoneIndex, float puckX, floa
 }
 
 bool MovementNode::computePuckBehindZoneEntrance(int8_t zoneIndex, float puckX, float puckY) const {
-    // "Behind" = puck has already crossed the zone's entrance line (the boundary
-    // facing the open table), so it's out of the robot's reach - ignore it entirely
-    // rather than chasing something already past the defense line.
     switch (zoneIndex) {
         case 0: return puckY <= config_.DEFENSE_ZONE_HEIGHT;                                    // top
         case 1: return puckY >= config_.PHYSICAL_TABLE_HEIGHT - config_.DEFENSE_ZONE_HEIGHT;    // bottom

@@ -7,3 +7,5 @@ config.json
 /.claude/
 /src/pc_node/build/
 /tools/
+table_perspective.yml
+table_perspective.yml.stale_bak

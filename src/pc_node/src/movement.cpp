@@ -14,7 +14,6 @@ MovementController::MovementController(const Config& config)
         robotSocket(-1)
     #endif
 {
-    currentJoints.resize(6, 0.0); 
     robotAddrLen = sizeof(robotAddr);
 
     #ifdef _WIN32
@@ -79,20 +78,49 @@ bool MovementController::startEgmServer() {
     return true;
 }
 
-bool MovementController::moveTo(cv::Point2f tablePosition) {
+bool MovementController::moveTo(cv::Point2f tablePosition, uint64_t detectionTimestampUs) {
     std::cout << "Setting target table position to: (" << tablePosition.x << ", " << tablePosition.y << ")" << std::endl;
     std::lock_guard<std::mutex> lock(targetMutex_);
-    
+
     targetTablePosition_ = tablePosition;
+    targetDetectionTimestampUs_ = detectionTimestampUs;
     return true;
 }
 
-float MovementController::getSentAngle() const {
-    return lastSentAngle_.load();
+float MovementController::getDetectionToSendLatencyMs() const {
+    return lastDetectionToSendLatencyMs_.load();
 }
 
-float MovementController::getActualAngle() const {
-    return lastActualAngle_.load();
+void MovementController::updatePuckPosition(cv::Point2f puckTablePosition) {
+    std::lock_guard<std::mutex> lock(targetMutex_);
+    puckTablePosition_ = puckTablePosition;
+}
+
+bool MovementController::puckAlreadyPastRobot(cv::Point2f puckTable, cv::Point2f robotTargetTable) const {
+    if (puckTable.x < 0 || puckTable.y < 0) return false;  // no live puck data yet
+    switch (config_.WHERE_DEFENSE_ZONE) {
+        case 0: return puckTable.y < robotTargetTable.y - PUCK_PAST_MARGIN_MM;  // top: approaches via decreasing y
+        case 1: return puckTable.y > robotTargetTable.y + PUCK_PAST_MARGIN_MM;  // bottom: increasing y
+        case 2: return puckTable.x < robotTargetTable.x - PUCK_PAST_MARGIN_MM;  // left: decreasing x
+        case 3: return puckTable.x > robotTargetTable.x + PUCK_PAST_MARGIN_MM;  // right: increasing x
+        default: return false;
+    }
+}
+
+cv::Point2f MovementController::getSentPosition() const {
+    return RobotToTableCoordinates(cv::Point2f(lastSentRobotX_.load(), lastSentRobotY_.load()));
+}
+
+cv::Point2f MovementController::getActualPosition() const {
+    return RobotToTableCoordinates(cv::Point2f(lastActualRobotX_.load(), lastActualRobotY_.load()));
+}
+
+cv::Point2f MovementController::getSentPositionRobotFrame() const {
+    return cv::Point2f(lastSentRobotX_.load(), lastSentRobotY_.load());
+}
+
+cv::Point2f MovementController::getActualPositionRobotFrame() const {
+    return cv::Point2f(lastActualRobotX_.load(), lastActualRobotY_.load());
 }
 
 void MovementController::stop() {
@@ -126,13 +154,12 @@ void MovementController::egmWorkerLoop() {
 
         abb::egm::EgmRobot robotPacket;
         if (robotPacket.ParseFromArray(recvBuffer, bytesReceived)) {
-            if (robotPacket.has_feedback() && robotPacket.feedback().has_joints()) {
-                const auto& joints = robotPacket.feedback().joints();
-                for (int i = 0; i < 6 && i < joints.joints_size(); ++i) {
-                    currentJoints[i] = joints.joints(i);
-                }
-                if (joints.joints_size() > 0) {
-                    lastActualAngle_.store(static_cast<float>(joints.joints(0)));
+            if (robotPacket.has_feedback()) {
+                const auto& feedback = robotPacket.feedback();
+                if (feedback.has_cartesian() && feedback.cartesian().has_pos()) {
+                    const auto& pos = feedback.cartesian().pos();
+                    lastActualRobotX_.store(static_cast<float>(pos.x()));
+                    lastActualRobotY_.store(static_cast<float>(pos.y()));
                 }
                 hasFeedback = true;
             }
@@ -142,33 +169,59 @@ void MovementController::egmWorkerLoop() {
             continue;
         }
         cv::Point2f localTarget;
+        uint64_t localDetectionTimestampUs = 0;
+        cv::Point2f localPuckTable;
         {
             std::lock_guard<std::mutex> lock(targetMutex_);
             localTarget = targetTablePosition_;
+            localDetectionTimestampUs = targetDetectionTimestampUs_;
+            localPuckTable = puckTablePosition_;
         }
 
-        float target_angle = 0.0f;
-        float x = localTarget.x;
-        float y = localTarget.y;
+        bool haveTarget = (localTarget.x >= 0 && localTarget.y >= 0);
+        if (!haveTarget) {
+            // No active target - the next real one is a fresh engagement, so
+            // don't let this session's re-arm distance block it.
+            lastStruckTarget_ = cv::Point2f(1e9f, 1e9f);
+        } else if (localDetectionTimestampUs > 0) {
+            uint64_t nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            if (nowUs > localDetectionTimestampUs) {
+                lastDetectionToSendLatencyMs_.store(
+                    static_cast<float>(nowUs - localDetectionTimestampUs) / 1000.0f);
+            }
+        }
+        cv::Point2f normalTargetTable = haveTarget ? localTarget : idleTablePosition();
+        cv::Point2f normalTargetRobot = TableToRobotCoordinates(normalTargetTable);
 
-        if (x < 0 || y < 0) {
-            target_angle = 0.0f;
-        } else {
-            target_angle = (y / config_.PHYSICAL_TABLE_HEIGHT) * 82.0f - 41.0f;
+        cv::Point2f actualRobotNow(lastActualRobotX_.load(), lastActualRobotY_.load());
+
+        if (motionPhase_ == MotionPhase::Striking &&
+            std::chrono::steady_clock::now() - strikeStartTime_ >= STRIKE_HOLD_DURATION) {
+            motionPhase_ = MotionPhase::Tracking;
         }
 
-        // Clamp limits
-        if (target_angle < -40.0f) target_angle = -40.0f;
-        if (target_angle > 40.0f)  target_angle = 40.0f;
-        // Test if robot is scaled correctly
-       // target_angle=30.0f;
+        if (motionPhase_ == MotionPhase::Tracking && haveTarget &&
+            cv::norm(actualRobotNow - normalTargetRobot) <= ARRIVAL_TOLERANCE_MM &&
+            cv::norm(normalTargetTable - lastStruckTarget_) > STRIKE_REARM_DISTANCE_MM &&
+            !puckAlreadyPastRobot(localPuckTable, normalTargetTable)) {
+            motionPhase_ = MotionPhase::Striking;
+            strikeBaseTable_ = normalTargetTable;
+            lastStruckTarget_ = normalTargetTable;
+            strikeStartTime_ = std::chrono::steady_clock::now();
+        }
 
+        cv::Point2f targetTable = (motionPhase_ == MotionPhase::Striking)
+            ? cv::Point2f(strikeBaseTable_.x - STRIKE_FORWARD_MM, strikeBaseTable_.y)
+            : normalTargetTable;
+        cv::Point2f targetRobot = TableToRobotCoordinates(targetTable);
 
-        float sent_angle = target_angle;
-        lastSentAngle_.store(sent_angle);
+        lastSentRobotX_.store(targetRobot.x);
+        lastSentRobotY_.store(targetRobot.y);
 
-        std::cout << "EGM MOVE: x=" << x << " y=" << y << " target_angle=" << target_angle
-                   << " sent_angle=" << sent_angle << std::endl;
+        std::cout << "EGM MOVE: table=(" << targetTable.x << ", " << targetTable.y
+                   << ") robot=(" << targetRobot.x << ", " << targetRobot.y << ")" << std::endl;
+
         abb::egm::EgmSensor sensorPacket;
         auto* header = sensorPacket.mutable_header();
         header->set_seqno(egm_seqno++);
@@ -176,12 +229,23 @@ void MovementController::egmWorkerLoop() {
         header->set_mtype(abb::egm::EgmHeader_MessageType_MSGTYPE_CORRECTION);
 
         auto* planned = sensorPacket.mutable_planned();
-        auto* joints = planned->mutable_joints();
+        auto* cartesian = planned->mutable_cartesian();
 
-        joints->add_joints(sent_angle);
-        for (size_t i = 1; i < 6; ++i) {
-            joints->add_joints(currentJoints[i]);
-        }
+        auto* pos = cartesian->mutable_pos();
+        if(targetRobot.x < 80.0f) targetRobot.x = 80.0f;
+        if(targetRobot.y < 80.0f) targetRobot.y = 80.0f;
+        if(targetRobot.x > config_.DEFENSE_ZONE_WIDTH + 100.0f) targetRobot.x = config_.DEFENSE_ZONE_WIDTH + 100.0f;
+        if(targetRobot.y > config_.PHYSICAL_TABLE_HEIGHT + 100.0f) targetRobot.y = config_.PHYSICAL_TABLE_HEIGHT+100.0f;
+        pos->set_x(targetRobot.x);
+        pos->set_y(targetRobot.y);
+        pos->set_z(0.0f);
+        
+
+        auto* orient = cartesian->mutable_orient();
+        orient->set_u0(1.0f);
+        orient->set_u1(0.0f);
+        orient->set_u2(0.0f);
+        orient->set_u3(0.0f);
 
         std::string outputBuffer;
         sensorPacket.SerializeToString(&outputBuffer);
@@ -211,14 +275,32 @@ void MovementController::disconnect() {
     hasFeedback = false;
 }
 
-cv::Point2f MovementController::TableToRobotCoordinates(cv::Point2f tablePosition) {
+cv::Point2f MovementController::TableToRobotCoordinates(cv::Point2f tablePosition) const {
     float robotX, robotY;
     switch (config_.robot_origin_corner) {
         case 0: robotX = tablePosition.y; robotY = tablePosition.x; break;
-        case 1: robotY = config_.PHYSICAL_TABLE_WIDTH - tablePosition.x; robotX = tablePosition.y; break;
+        case 1: robotX = config_.PHYSICAL_TABLE_WIDTH - tablePosition.x; robotY = tablePosition.y; break;
         case 2: robotX = tablePosition.x; robotY = config_.PHYSICAL_TABLE_HEIGHT - tablePosition.y; break;
-        case 3: robotX = config_.PHYSICAL_TABLE_HEIGHT - tablePosition.y; robotY = config_.PHYSICAL_TABLE_WIDTH - tablePosition.x; break;
+        case 3: robotX = tablePosition.y; robotY = config_.PHYSICAL_TABLE_WIDTH - tablePosition.x; break;
         default: robotX = tablePosition.y; robotY = tablePosition.x; break;
     }
     return cv::Point2f(robotX, robotY);
+}
+
+cv::Point2f MovementController::RobotToTableCoordinates(cv::Point2f robotPosition) const {
+    float tableX, tableY;
+    switch (config_.robot_origin_corner) {
+        case 0: tableX = robotPosition.y; tableY = robotPosition.x; break;
+        case 1: tableX = config_.PHYSICAL_TABLE_WIDTH - robotPosition.x; tableY = robotPosition.y; break;
+        case 2: tableX = robotPosition.x; tableY = config_.PHYSICAL_TABLE_HEIGHT - robotPosition.y; break;
+        case 3: tableY = config_.PHYSICAL_TABLE_HEIGHT - robotPosition.x; tableX = config_.PHYSICAL_TABLE_WIDTH - robotPosition.y; break;
+        default: tableX = robotPosition.y; tableY = robotPosition.x; break;
+    }
+    return cv::Point2f(tableX, tableY);
+}
+
+cv::Point2f MovementController::idleTablePosition() const {
+    return cv::Point2f(
+        config_.PHYSICAL_TABLE_WIDTH - config_.DEFENSE_ZONE_WIDTH,
+        config_.PHYSICAL_TABLE_HEIGHT / 2.0f);
 }

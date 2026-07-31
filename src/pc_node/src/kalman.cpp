@@ -1,4 +1,6 @@
 #include "kalman.hpp"
+#include <cmath>
+#include <algorithm>
 
 KalmanFilter::KalmanFilter() {
     // State: [x, y, vx, vy]
@@ -18,10 +20,9 @@ KalmanFilter::KalmanFilter() {
           0, 1, 0, 0;
 
     Q_ = Eigen::MatrixXd::Zero(4, 4);
-    // Measurement noise
-    R_ = Eigen::MatrixXd::Identity(2, 2) * 0.1;
-
-    sigma_a_ = 8.0;
+    R_ = Eigen::MatrixXd::Identity(2, 2) * 0.974;
+    sigma_a_ = 250.0;
+    friction_decel_ = 2701.65;
 }
 
 void KalmanFilter::reset() {
@@ -48,6 +49,19 @@ void KalmanFilter::predict(double dt) {
               
     Q_ *= (sigma_a_ * sigma_a_);
     state_ = F_ * state_;
+
+    if (friction_decel_ > 0.0) {
+        double vx = state_(2);
+        double vy = state_(3);
+        double speed = std::hypot(vx, vy);
+        if (speed > 1e-6) {
+            double newSpeed = std::max(0.0, speed - friction_decel_ * dt);
+            double scale = newSpeed / speed;
+            state_(2) = vx * scale;
+            state_(3) = vy * scale;
+        }
+    }
+
     P_ = F_ * P_ * F_.transpose() + Q_;
 }
 void KalmanFilter::update(const Eigen::VectorXd& measurement) {

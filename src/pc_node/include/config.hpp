@@ -39,6 +39,7 @@ public:
     int TABLE_DETECT_THRESHOLD = 150; // Threshold for table detection 
     int PUCK_MIN_AREA = 150; // Minimum area for blob detection
     int PUCK_MAX_AREA = 10000; // Maximum area for blob detection
+    int PUCK_ARUCO_ID = 5; // AprilTag 16h5 marker ID attached to the puck
 
     // Robot configuration
     std::string ROBOT_IP = "10.25.74.172";  
@@ -104,6 +105,7 @@ public:
         TABLE_DETECT_THRESHOLD = 150;
         PUCK_MIN_AREA = 150;
         PUCK_MAX_AREA = 10000;
+        PUCK_ARUCO_ID = 5;
 
         // Robot configuration
         ROBOT_IP = "10.25.74.172";
@@ -135,6 +137,7 @@ private:
             {"TABLE_DETECT_THRESHOLD", c.TABLE_DETECT_THRESHOLD},
             {"PUCK_MIN_AREA", c.PUCK_MIN_AREA},
             {"PUCK_MAX_AREA", c.PUCK_MAX_AREA},
+            {"PUCK_ARUCO_ID", c.PUCK_ARUCO_ID},
             {"ROBOT_IP", c.ROBOT_IP},
             {"TABLE_OFFSET_X", c.TABLE_OFFSET_X},
             {"TABLE_OFFSET_Y", c.TABLE_OFFSET_Y},
@@ -163,6 +166,7 @@ private:
         c.TABLE_DETECT_THRESHOLD = j.value("TABLE_DETECT_THRESHOLD", 150);
         c.PUCK_MIN_AREA = j.value("PUCK_MIN_AREA", 150);
         c.PUCK_MAX_AREA = j.value("PUCK_MAX_AREA", 10000);
+        c.PUCK_ARUCO_ID = j.value("PUCK_ARUCO_ID", 5);
         c.ROBOT_IP = j.value("ROBOT_IP", "10.25.74.172");
         c.TABLE_OFFSET_X = j.value("TABLE_OFFSET_X", 0.0);
         c.TABLE_OFFSET_Y = j.value("TABLE_OFFSET_Y", 0.0);

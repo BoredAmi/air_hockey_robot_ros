@@ -16,20 +16,33 @@ MovementNode::MovementNode(const rclcpp::NodeOptions & options)
         sub_qos,
         std::bind(&MovementNode::entry_callback, this, std::placeholders::_1));
 
-    angle_pub_ = this->create_publisher<std_msgs::msg::Float32>(
-        "/robot/sent_angle", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
-    actual_angle_pub_ = this->create_publisher<std_msgs::msg::Float32>(
-        "/robot/actual_angle", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
-    angle_pub_timer_ = this->create_wall_timer(
+    sent_position_pub_ = this->create_publisher<std_msgs::msg::Float32MultiArray>(
+        "/robot/sent_position", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
+    actual_position_pub_ = this->create_publisher<std_msgs::msg::Float32MultiArray>(
+        "/robot/actual_position", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
+    latency_pub_ = this->create_publisher<std_msgs::msg::Float32>(
+        "/robot/detection_to_send_latency_ms", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
+    target_accepted_pub_ = this->create_publisher<std_msgs::msg::Bool>(
+        "/robot/target_accepted", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
+    position_pub_timer_ = this->create_wall_timer(
         std::chrono::milliseconds(20),
         [this]() {
-            std_msgs::msg::Float32 sent_msg;
-            sent_msg.data = mover_.getSentAngle();
-            angle_pub_->publish(sent_msg);
+            // Layout: [tableX, tableY, robotX, robotY]
+            cv::Point2f sentTable = mover_.getSentPosition();
+            cv::Point2f sentRobot = mover_.getSentPositionRobotFrame();
+            std_msgs::msg::Float32MultiArray sent_msg;
+            sent_msg.data = {sentTable.x, sentTable.y, sentRobot.x, sentRobot.y};
+            sent_position_pub_->publish(sent_msg);
 
-            std_msgs::msg::Float32 actual_msg;
-            actual_msg.data = mover_.getActualAngle();
-            actual_angle_pub_->publish(actual_msg);
+            cv::Point2f actualTable = mover_.getActualPosition();
+            cv::Point2f actualRobot = mover_.getActualPositionRobotFrame();
+            std_msgs::msg::Float32MultiArray actual_msg;
+            actual_msg.data = {actualTable.x, actualTable.y, actualRobot.x, actualRobot.y};
+            actual_position_pub_->publish(actual_msg);
+
+            std_msgs::msg::Float32 latency_msg;
+            latency_msg.data = mover_.getDetectionToSendLatencyMs();
+            latency_pub_->publish(latency_msg);
         });
 
     RCLCPP_INFO(this->get_logger(),
@@ -63,13 +76,15 @@ Config MovementNode::load_config_parameters() {
 
 void MovementNode::load_parameters() {
     this->declare_parameter<double>("min_speed_for_robot_mm_s", 100.0);
-    this->declare_parameter<double>("defense_zone_buffer_mm", 100.0);
+    this->declare_parameter<double>("defense_zone_buffer_mm", 450.0);
     this->declare_parameter<int>("track_hold_duration_ms", 1000);
+    this->declare_parameter<double>("min_time_to_entry_s", 0.15);
 
     min_speed_for_robot_mm_s_ = this->get_parameter("min_speed_for_robot_mm_s").as_double();
     defense_zone_buffer_mm_ = this->get_parameter("defense_zone_buffer_mm").as_double();
     track_hold_duration_us_ =
         static_cast<uint64_t>(this->get_parameter("track_hold_duration_ms").as_int()) * 1000ULL;
+    min_time_to_entry_s_ = this->get_parameter("min_time_to_entry_s").as_double();
 }
 
 
@@ -86,20 +101,16 @@ bool MovementNode::computeMovingTowardZone(int8_t zoneIndex, float vx, float vy)
 
 bool MovementNode::computePuckTooCloseToZone(int8_t zoneIndex, float puckX, float puckY, bool alreadyInZone) const {
     if (alreadyInZone) return true;
-
     switch (zoneIndex) {
-        case 0: return puckX < config_.DEFENSE_ZONE_WIDTH + defense_zone_buffer_mm_;
-        case 1: return puckX > config_.PHYSICAL_TABLE_WIDTH - config_.DEFENSE_ZONE_WIDTH - defense_zone_buffer_mm_;
-        case 2: return puckY < config_.DEFENSE_ZONE_HEIGHT + defense_zone_buffer_mm_;
-        case 3: return puckY > config_.PHYSICAL_TABLE_HEIGHT - config_.DEFENSE_ZONE_HEIGHT - defense_zone_buffer_mm_;
+        case 0: return puckY < config_.DEFENSE_ZONE_HEIGHT + defense_zone_buffer_mm_;
+        case 1: return puckY > config_.PHYSICAL_TABLE_HEIGHT - config_.DEFENSE_ZONE_HEIGHT - defense_zone_buffer_mm_;
+        case 2: return puckX < config_.DEFENSE_ZONE_WIDTH + defense_zone_buffer_mm_;
+        case 3: return puckX > config_.PHYSICAL_TABLE_WIDTH - config_.DEFENSE_ZONE_WIDTH - defense_zone_buffer_mm_;
         default: return false;
     }
 }
 
 bool MovementNode::computePuckBehindZoneEntrance(int8_t zoneIndex, float puckX, float puckY) const {
-    // "Behind" = puck has already crossed the zone's entrance line (the boundary
-    // facing the open table), so it's out of the robot's reach - ignore it entirely
-    // rather than chasing something already past the defense line.
     switch (zoneIndex) {
         case 0: return puckY <= config_.DEFENSE_ZONE_HEIGHT;                                    // top
         case 1: return puckY >= config_.PHYSICAL_TABLE_HEIGHT - config_.DEFENSE_ZONE_HEIGHT;    // bottom
@@ -112,9 +123,18 @@ bool MovementNode::computePuckBehindZoneEntrance(int8_t zoneIndex, float puckX, 
 void MovementNode::entry_callback(const air_hockey_robot_msgs::msg::PredictedEntry::SharedPtr msg) {
     cv::Point2f targetTablePos(-1.0f, -1.0f);
 
-    bool puckBehindZone = computePuckBehindZoneEntrance(msg->defense_zone_index, msg->puck_x, msg->puck_y);
+    mover_.updatePuckPosition(cv::Point2f(msg->puck_x, msg->puck_y));
 
-    if (!puckBehindZone && msg->valid) {
+    bool puckBehindZone = computePuckBehindZoneEntrance(msg->defense_zone_index, msg->puck_x, msg->puck_y);
+    bool puckTooCloseToZone = computePuckTooCloseToZone(
+        msg->defense_zone_index, msg->puck_x, msg->puck_y, msg->puck_in_defense_zone);
+
+    bool targetAccepted = !puckBehindZone && !puckTooCloseToZone && msg->valid;
+    std_msgs::msg::Bool accepted_msg;
+    accepted_msg.data = targetAccepted;
+    target_accepted_pub_->publish(accepted_msg);
+
+    if (targetAccepted) {
         /*
         double speed = std::hypot(msg->vx, msg->vy);
 
@@ -156,7 +176,7 @@ void MovementNode::entry_callback(const air_hockey_robot_msgs::msg::PredictedEnt
     }
 
 
-    mover_.moveTo(targetTablePos);
+    mover_.moveTo(targetTablePos, lastMoveTimeUs_);
 }
 
 } // namespace pc_node

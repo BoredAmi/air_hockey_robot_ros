@@ -11,6 +11,14 @@ PerceptionNode::PerceptionNode(const rclcpp::NodeOptions & options)
 {
     load_parameters();
 
+    arucoDict_ = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_APRILTAG_16h5);
+    arucoParams_ = cv::aruco::DetectorParameters::create();
+    arucoParams_->adaptiveThreshWinSizeMin = 3;
+    arucoParams_->adaptiveThreshWinSizeMax = 23;
+    arucoParams_->adaptiveThreshWinSizeStep = 3;
+    arucoParams_->cornerRefinementMethod = cv::aruco::CORNER_REFINE_SUBPIX;
+    arucoParams_->minMarkerPerimeterRate = 0.015;
+
     loadCalibration();
     loadCachedPerspective();
 
@@ -51,6 +59,7 @@ void PerceptionNode::load_parameters() {
     this->declare_parameter<int>("puck_threshold", fileConfig.PUCK_THRESHOLD);
     this->declare_parameter<double>("puck_min_area", fileConfig.PUCK_MIN_AREA);
     this->declare_parameter<double>("puck_max_area", fileConfig.PUCK_MAX_AREA);
+    this->declare_parameter<int>("puck_aruco_id", fileConfig.PUCK_ARUCO_ID);
     this->declare_parameter<double>("physical_table_width", fileConfig.PHYSICAL_TABLE_WIDTH);
     this->declare_parameter<double>("physical_table_height", fileConfig.PHYSICAL_TABLE_HEIGHT);
     this->declare_parameter<int>("table_width", fileConfig.TABLE_WIDTH);
@@ -61,6 +70,7 @@ void PerceptionNode::load_parameters() {
     config_.PUCK_THRESHOLD = this->get_parameter("puck_threshold").as_int();
     config_.PUCK_MIN_AREA = this->get_parameter("puck_min_area").as_double();
     config_.PUCK_MAX_AREA = this->get_parameter("puck_max_area").as_double();
+    config_.PUCK_ARUCO_ID = this->get_parameter("puck_aruco_id").as_int();
     config_.PHYSICAL_TABLE_WIDTH = this->get_parameter("physical_table_width").as_double();
     config_.PHYSICAL_TABLE_HEIGHT = this->get_parameter("physical_table_height").as_double();
     config_.TABLE_WIDTH = this->get_parameter("table_width").as_int();
@@ -78,8 +88,6 @@ void PerceptionNode::image_callback(const air_hockey_robot_msgs::msg::PuckState:
 }
 
 void PerceptionNode::processing_loop() {
-    cv_bridge::CvImagePtr cv_ptr;
-
     while (is_running_ && rclcpp::ok()) {
         air_hockey_robot_msgs::msg::PuckState incoming;
         {
@@ -90,15 +98,9 @@ void PerceptionNode::processing_loop() {
             frame_queue_.pop();
         }
 
-        try {
-            cv_ptr = cv_bridge::toCvCopy(incoming.image_frame, sensor_msgs::image_encodings::MONO8);
-        } catch (cv_bridge::Exception& e) {
-            RCLCPP_ERROR(this->get_logger(), "cv_bridge conversion error: %s", e.what());
-            continue;
-        }
-
-        cv::Mat frame = cv_ptr->image;
+        cv::Mat frame = cv::imdecode(incoming.image_frame.data, cv::IMREAD_GRAYSCALE);
         if (frame.empty()) {
+            RCLCPP_ERROR(this->get_logger(), "Failed to decode JPEG frame");
             continue;
         }
 
@@ -266,55 +268,32 @@ cv::RotatedRect PerceptionNode::detectTable(cv::Mat& image) {
 cv::Point2f PerceptionNode::detectPuck(const cv::Mat& grayImage) {
     if (grayImage.empty()) return cv::Point2f(-1, -1);
 
-    cv::Mat blurred;
-    cv::GaussianBlur(grayImage, blurred, cv::Size(5, 5), 0);
+    std::vector<int> ids;
+    std::vector<std::vector<cv::Point2f>> corners, rejected;
+    cv::aruco::detectMarkers(grayImage, arucoDict_, corners, ids, arucoParams_, rejected);
 
-    std::vector<int> threshTypes = { cv::THRESH_BINARY, cv::THRESH_BINARY_INV };
-
-    double bestScore = 0.0;
-    cv::Point2f bestCenter(-1, -1);
-
-    for (int t : threshTypes) {
-        cv::Mat thresh;
-        cv::threshold(blurred, thresh, config_.PUCK_THRESHOLD, 255, t);
-
-        cv::morphologyEx(thresh, thresh, cv::MORPH_OPEN,
-            cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3)));
-
-        std::vector<std::vector<cv::Point>> contours;
-        cv::findContours(thresh, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-
-        for (const auto& contour : contours) {
-            double area = cv::contourArea(contour);
-            if (area < config_.PUCK_MIN_AREA || area > config_.PUCK_MAX_AREA) continue;
-
-            double perimeter = cv::arcLength(contour, true);
-            if (perimeter <= 1e-6) continue;
-            double circularity = 4 * CV_PI * area / (perimeter * perimeter);
-
-            double score = circularity * area;
-            if (circularity >= 0.5 && score > bestScore) {
-                cv::Point2f center;
-                float radius;
-                cv::minEnclosingCircle(contour, center, radius);
-
-                const double borderMm = 30.0;
-                int imgW = grayImage.cols;
-                int imgH = grayImage.rows;
-                double marginX = (borderMm / config_.PHYSICAL_TABLE_WIDTH) * imgW;
-                double marginY = (borderMm / config_.PHYSICAL_TABLE_HEIGHT) * imgH;
-                if (center.x < marginX || center.x > (imgW - marginX) ||
-                    center.y < marginY || center.y > (imgH - marginY)) {
-                    continue;
-                }
-
-                bestScore = score;
-                bestCenter = center;
-            }
-        }
+    if (ids.empty()) {
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+            "No ArUco markers found in %dx%d cropped/warped table image", grayImage.cols, grayImage.rows);
+    } else {
+        std::string idList;
+        for (int id : ids) idList += std::to_string(id) + " ";
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+            "Markers seen this frame: [ %s] (looking for id %d) in %dx%d image",
+            idList.c_str(), config_.PUCK_ARUCO_ID, grayImage.cols, grayImage.rows);
     }
 
-    return bestCenter;
+    for (size_t i = 0; i < ids.size(); ++i) {
+        if (ids[i] != config_.PUCK_ARUCO_ID) continue;
+
+        cv::Point2f center(0.0f, 0.0f);
+        for (const auto& corner : corners[i]) center += corner;
+        center *= 0.25f;
+
+        return center;
+    }
+
+    return cv::Point2f(-1, -1);
 }
 
 cv::Point2f PerceptionNode::imageToTableCoordinates(cv::Point2f imagePoint, int imageWidth, int imageHeight) {

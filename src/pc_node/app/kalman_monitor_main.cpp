@@ -10,7 +10,9 @@
 #include <rclcpp/rclcpp.hpp>
 #include <air_hockey_robot_msgs/msg/puck_detection.hpp>
 #include <air_hockey_robot_msgs/msg/predicted_entry.hpp>
+#include <std_msgs/msg/float32_multi_array.hpp>
 #include <std_msgs/msg/float32.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include "config.hpp"
 
 #include <opencv2/opencv.hpp>
@@ -168,11 +170,6 @@ int main(int argc, char** argv) {
     double dzW = node->get_parameter("defense_zone_width").as_double();
     double dzH = node->get_parameter("defense_zone_height").as_double();
 
-    // Physical J1 arm geometry: pivot mounted outside the table, this far from its edge,
-    // with a rigid arm of this length sweeping through the sent angle.
-    const double robotArmLengthMm = 440.0;
-    const double robotArmPivotOffsetMm = 230.0;
-
     std::mutex data_mutex;
     std::map<uint64_t, RawSample> rawByTimestamp; // czekajace na dopasowanie z predicted_entry
     RawSample latestRaw{cv::Point2f(-1, -1), 0};
@@ -189,20 +186,21 @@ int main(int argc, char** argv) {
     GraphStrip errYGraph("blad Y (mm)", cv::Scalar(0, 255, 255));
     GraphStrip speedGraph("predkosc (mm/s)", cv::Scalar(0, 255, 0));
     GraphStrip confGraph("confidence", cv::Scalar(255, 100, 100), 300, 0.0f, 1.0f);
-    GraphStrip angleGraph("wyslany kat J1 (deg)", cv::Scalar(180, 0, 255), 300, -41.0f, 41.0f);
-    angleGraph.enableSecond("rzeczywisty kat J1 (deg)", cv::Scalar(0, 255, 120));
+    GraphStrip posErrGraph("blad pozycji robota (mm)", cv::Scalar(180, 0, 255));
+    GraphStrip latencyGraph("detekcja->wyslanie (ms)", cv::Scalar(255, 180, 0));
 
-    float latestSentAngle = 0.0f;
-    bool hasSentAngle = false;
-    float latestActualAngle = 0.0f;
-    bool hasActualAngle = false;
+    cv::Point2f latestSentPos(-1.0f, -1.0f);
+    cv::Point2f latestSentPosRobot(-1.0f, -1.0f);
+    bool hasSentPos = false;
+    cv::Point2f latestActualPos(-1.0f, -1.0f);
+    cv::Point2f latestActualPosRobot(-1.0f, -1.0f);
+    bool hasActualPos = false;
+    float latestLatencyMs = 0.0f;
+    bool hasLatency = false;
 
-    // Snapshot the whole canvas each time a new defensive move starts (predValid
-    // false->true), so we get one image per attack showing where the puck was and
-    // what angle/timing was in play - for bottleneck hunting after the fact.
     const std::filesystem::path snapshotDir = "logs/kalman_snapshots";
     std::filesystem::create_directories(snapshotDir);
-    bool prevPredValid = false;
+    bool prevTargetAccepted = false;
     bool pendingSnapshot = false;
     uint64_t snapshotPuckTimestamp = 0;
 
@@ -236,12 +234,6 @@ int main(int argc, char** argv) {
             latestFiltered.timestamp = msg->timestamp;
             hasFiltered = true;
 
-            if (msg->valid && !prevPredValid) {
-                pendingSnapshot = true;
-                snapshotPuckTimestamp = msg->timestamp;
-            }
-            prevPredValid = msg->valid;
-
             float speed = std::hypot(msg->vx, msg->vy);
             speedGraph.push(speed);
             confGraph.push(msg->confidence);
@@ -256,22 +248,52 @@ int main(int argc, char** argv) {
             }
         });
 
-    auto angle_sub = node->create_subscription<std_msgs::msg::Float32>(
-        "/robot/sent_angle", rclcpp::QoS(rclcpp::KeepLast(5)).best_effort(),
-        [&](const std_msgs::msg::Float32::SharedPtr msg) {
+    // Layout: [tableX, tableY, robotX, robotY]
+    auto sent_position_sub = node->create_subscription<std_msgs::msg::Float32MultiArray>(
+        "/robot/sent_position", rclcpp::QoS(rclcpp::KeepLast(5)).best_effort(),
+        [&](const std_msgs::msg::Float32MultiArray::SharedPtr msg) {
+            if (msg->data.size() < 2) return;
             std::lock_guard<std::mutex> lk(data_mutex);
-            latestSentAngle = msg->data;
-            hasSentAngle = true;
-            angleGraph.push(latestSentAngle);
+            latestSentPos = cv::Point2f(msg->data[0], msg->data[1]);
+            if (msg->data.size() >= 4) {
+                latestSentPosRobot = cv::Point2f(msg->data[2], msg->data[3]);
+            }
+            hasSentPos = true;
         });
 
-    auto actual_angle_sub = node->create_subscription<std_msgs::msg::Float32>(
-        "/robot/actual_angle", rclcpp::QoS(rclcpp::KeepLast(5)).best_effort(),
+    auto actual_position_sub = node->create_subscription<std_msgs::msg::Float32MultiArray>(
+        "/robot/actual_position", rclcpp::QoS(rclcpp::KeepLast(5)).best_effort(),
+        [&](const std_msgs::msg::Float32MultiArray::SharedPtr msg) {
+            if (msg->data.size() < 2) return;
+            std::lock_guard<std::mutex> lk(data_mutex);
+            latestActualPos = cv::Point2f(msg->data[0], msg->data[1]);
+            if (msg->data.size() >= 4) {
+                latestActualPosRobot = cv::Point2f(msg->data[2], msg->data[3]);
+            }
+            hasActualPos = true;
+            if (hasSentPos) {
+                posErrGraph.push(cv::norm(latestActualPos - latestSentPos));
+            }
+        });
+
+    auto latency_sub = node->create_subscription<std_msgs::msg::Float32>(
+        "/robot/detection_to_send_latency_ms", rclcpp::QoS(rclcpp::KeepLast(5)).best_effort(),
         [&](const std_msgs::msg::Float32::SharedPtr msg) {
             std::lock_guard<std::mutex> lk(data_mutex);
-            latestActualAngle = msg->data;
-            hasActualAngle = true;
-            angleGraph.pushSecond(latestActualAngle);
+            latestLatencyMs = msg->data;
+            hasLatency = true;
+            latencyGraph.push(latestLatencyMs);
+        });
+
+    auto target_accepted_sub = node->create_subscription<std_msgs::msg::Bool>(
+        "/robot/target_accepted", rclcpp::QoS(rclcpp::KeepLast(5)).best_effort(),
+        [&](const std_msgs::msg::Bool::SharedPtr msg) {
+            std::lock_guard<std::mutex> lk(data_mutex);
+            if (msg->data && !prevTargetAccepted) {
+                pendingSnapshot = true;
+                snapshotPuckTimestamp = latestFiltered.timestamp;
+            }
+            prevTargetAccepted = msg->data;
         });
 
     const int TABLE_VIEW_W = 900;
@@ -288,12 +310,27 @@ int main(int argc, char** argv) {
             MARGIN + static_cast<int>(p.y * scale));
     };
 
+    const int ROBOT_VIEW_GAP = 20;
+    const int ROBOT_VIEW_W = 260;
+    const int ROBOT_VIEW_H = TABLE_VIEW_H;
+    const int ROBOT_VIEW_X = TABLE_VIEW_W + ROBOT_VIEW_GAP;
+    const double robotViewDim = std::max(tableW, tableH);
+    const double robotScale = std::min(
+        (ROBOT_VIEW_W - 2.0 * MARGIN) / robotViewDim,
+        (ROBOT_VIEW_H - 2.0 * MARGIN) / robotViewDim);
+
+    auto robotToView = [&](cv::Point2f p) -> cv::Point {
+        return cv::Point(
+            ROBOT_VIEW_X + MARGIN + static_cast<int>(p.x * robotScale),
+            MARGIN + static_cast<int>(p.y * robotScale));
+    };
+
     cv::namedWindow("Kalman Monitor", cv::WINDOW_NORMAL);
 
     const int GRAPH_H = 100;
     const int GRAPH_GAP = 6;
-    const int WINDOW_W = TABLE_VIEW_W;
-    const int WINDOW_H = TABLE_VIEW_H + 5 * (GRAPH_H + GRAPH_GAP) + GRAPH_GAP;
+    const int WINDOW_W = TABLE_VIEW_W + ROBOT_VIEW_GAP + ROBOT_VIEW_W;
+    const int WINDOW_H = TABLE_VIEW_H + 6 * (GRAPH_H + GRAPH_GAP) + GRAPH_GAP;
     cv::resizeWindow("Kalman Monitor", WINDOW_W, WINDOW_H);
 
     std::cout << "kalman_monitor - sterowanie:" << std::endl;
@@ -319,20 +356,40 @@ int main(int argc, char** argv) {
                 tableToView(cv::Point2f(tableW, (tableH + dzH) / 2.0)),
                 cv::Scalar(60, 60, 160), 1);
 
-            {
-                cv::Point2f pivot(static_cast<float>(tableW + robotArmPivotOffsetMm),
-                                   static_cast<float>(tableH / 2.0));
-                float angleRad = (hasSentAngle ? latestSentAngle : 0.0f) * static_cast<float>(CV_PI) / 180.0f;
-                cv::Point2f tip(
-                    pivot.x - robotArmLengthMm * std::cos(angleRad),
-                    pivot.y + robotArmLengthMm * std::sin(angleRad));
+            // Robot-frame panel border + label.
+            cv::rectangle(canvas, cv::Rect(ROBOT_VIEW_X, MARGIN,
+                static_cast<int>(robotViewDim * robotScale), static_cast<int>(robotViewDim * robotScale)),
+                cv::Scalar(100, 100, 100), 1);
+            cv::putText(canvas, "robot frame (mm)", cv::Point(ROBOT_VIEW_X, MARGIN - 8),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(150, 150, 150), 1);
 
-                cv::Point pivotView = tableToView(pivot);
-                cv::Point tipView = tableToView(tip);
-                cv::line(canvas, pivotView, tipView, cv::Scalar(0, 200, 255), 3, cv::LINE_AA);
-                cv::circle(canvas, pivotView, 4, cv::Scalar(0, 200, 255), -1);
-                cv::putText(canvas, "J1", tipView + cv::Point(6, 6),
+            if (hasSentPos) {
+                cv::Point p = tableToView(latestSentPos);
+                cv::circle(canvas, p, 6, cv::Scalar(0, 200, 255), 2);
+                cv::putText(canvas, "sent", p + cv::Point(8, -8),
                             cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 200, 255), 1);
+
+                cv::Point pr = robotToView(latestSentPosRobot);
+                cv::circle(canvas, pr, 6, cv::Scalar(0, 200, 255), 2);
+                cv::putText(canvas, "sent", pr + cv::Point(8, -8),
+                            cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 200, 255), 1);
+            }
+            if (hasActualPos) {
+                cv::Point p = tableToView(latestActualPos);
+                cv::circle(canvas, p, 6, cv::Scalar(0, 200, 255), -1);
+                cv::putText(canvas, "robot", p + cv::Point(8, 12),
+                            cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 200, 255), 1);
+
+                cv::Point pr = robotToView(latestActualPosRobot);
+                cv::circle(canvas, pr, 6, cv::Scalar(0, 200, 255), -1);
+                cv::putText(canvas, "robot", pr + cv::Point(8, 12),
+                            cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 200, 255), 1);
+            }
+            if (hasSentPos && hasActualPos) {
+                cv::line(canvas, tableToView(latestSentPos), tableToView(latestActualPos),
+                          cv::Scalar(0, 200, 255), 1, cv::LINE_AA);
+                cv::line(canvas, robotToView(latestSentPosRobot), robotToView(latestActualPosRobot),
+                          cv::Scalar(0, 200, 255), 1, cv::LINE_AA);
             }
 
             if (hasRaw) {
@@ -379,23 +436,46 @@ int main(int argc, char** argv) {
                 }
             }
 
+            float posErr = (hasSentPos && hasActualPos)
+                ? static_cast<float>(cv::norm(latestActualPos - latestSentPos)) : 0.0f;
+            // Puck position at the moment behind the currently-displayed "sent"
+            // target - i.e. what the robot's move command was actually based on.
+            char puckBuf[256];
+            snprintf(puckBuf, sizeof(puckBuf),
+                "puck: raw(%.0f, %.0f)  kalman(%.0f, %.0f)  predicted entry(%.0f, %.0f)",
+                hasRaw ? latestRaw.pos.x : 0.0f, hasRaw ? latestRaw.pos.y : 0.0f,
+                hasFiltered ? latestFiltered.pos.x : 0.0f, hasFiltered ? latestFiltered.pos.y : 0.0f,
+                (hasFiltered && latestFiltered.predValid) ? latestFiltered.predEntry.x : 0.0f,
+                (hasFiltered && latestFiltered.predValid) ? latestFiltered.predEntry.y : 0.0f);
+            cv::putText(canvas, puckBuf, cv::Point(MARGIN, TABLE_VIEW_H - 44),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(0, 255, 0), 1);
+
             char statsBuf[256];
             snprintf(statsBuf, sizeof(statsBuf),
-                "conf: %.2f  speed: %.1f mm/s  sent J1: %.1f deg  actual J1: %.1f deg  err: %.1f deg",
+                "conf: %.2f  speed: %.1f mm/s  err: %.1f mm  latency: %.1f ms",
                 hasFiltered ? latestFiltered.confidence : 0.0f,
                 hasFiltered ? std::hypot(latestFiltered.vel.x, latestFiltered.vel.y) : 0.0f,
-                hasSentAngle ? latestSentAngle : 0.0f,
-                hasActualAngle ? latestActualAngle : 0.0f,
-                (hasSentAngle && hasActualAngle) ? (latestSentAngle - latestActualAngle) : 0.0f);
-            cv::putText(canvas, statsBuf, cv::Point(MARGIN, TABLE_VIEW_H - 8),
+                posErr, hasLatency ? latestLatencyMs : 0.0f);
+            cv::putText(canvas, statsBuf, cv::Point(MARGIN, TABLE_VIEW_H - 26),
                         cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(220, 220, 220), 1);
+
+            char posBuf[256];
+            snprintf(posBuf, sizeof(posBuf),
+                "table: sent(%.0f, %.0f) robot(%.0f, %.0f)   robot-frame: sent(%.0f, %.0f) robot(%.0f, %.0f)",
+                hasSentPos ? latestSentPos.x : 0.0f, hasSentPos ? latestSentPos.y : 0.0f,
+                hasActualPos ? latestActualPos.x : 0.0f, hasActualPos ? latestActualPos.y : 0.0f,
+                hasSentPos ? latestSentPosRobot.x : 0.0f, hasSentPos ? latestSentPosRobot.y : 0.0f,
+                hasActualPos ? latestActualPosRobot.x : 0.0f, hasActualPos ? latestActualPosRobot.y : 0.0f);
+            cv::putText(canvas, posBuf, cv::Point(MARGIN, TABLE_VIEW_H - 8),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.42, cv::Scalar(220, 220, 220), 1);
 
             int y = TABLE_VIEW_H + GRAPH_GAP;
             errXGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H)); y += GRAPH_H + GRAPH_GAP;
             errYGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H)); y += GRAPH_H + GRAPH_GAP;
             speedGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H)); y += GRAPH_H + GRAPH_GAP;
             confGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H)); y += GRAPH_H + GRAPH_GAP;
-            angleGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H));
+            posErrGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H)); y += GRAPH_H + GRAPH_GAP;
+            latencyGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H));
 
             if (pendingSnapshot) {
                 char filename[128];
@@ -417,8 +497,8 @@ int main(int argc, char** argv) {
             errYGraph.values.clear();
             speedGraph.values.clear();
             confGraph.values.clear();
-            angleGraph.values.clear();
-            angleGraph.values2.clear();
+            posErrGraph.values.clear();
+            latencyGraph.values.clear();
             rawTrail.clear();
             filteredTrail.clear();
             rawByTimestamp.clear();

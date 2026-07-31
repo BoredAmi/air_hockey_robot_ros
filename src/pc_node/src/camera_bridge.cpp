@@ -32,14 +32,15 @@ void CameraBridge::spinOnce() {
 }
 
 void CameraBridge::image_callback(const air_hockey_robot_msgs::msg::PuckState::SharedPtr msg) {
-    try {
-        auto cv_ptr = cv_bridge::toCvCopy(msg->image_frame, sensor_msgs::image_encodings::MONO8);
-        std::lock_guard<std::mutex> lock(frame_mutex_);
-        latest_raw_frame_ = cv_ptr->image;
-        has_frame_ = true;
-    } catch (cv_bridge::Exception& e) {
-        RCLCPP_ERROR(node_->get_logger(), "cv_bridge conversion error: %s", e.what());
+    // Yach so now we pi just forwards camera stream as compressed JPEGs, so we need to decode here in fututre probably all on one minipc :p
+    cv::Mat decoded = cv::imdecode(msg->image_frame.data, cv::IMREAD_GRAYSCALE);
+    if (decoded.empty()) {
+        RCLCPP_ERROR(node_->get_logger(), "Failed to decode JPEG frame");
+        return;
     }
+    std::lock_guard<std::mutex> lock(frame_mutex_);
+    latest_raw_frame_ = decoded;
+    has_frame_ = true;
 }
 
 cv::Mat CameraBridge::captureRawImage() {

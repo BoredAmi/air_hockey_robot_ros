@@ -1,3 +1,3 @@
 uint64 timestamp
 bool is_detected
-sensor_msgs/Image image_frame
+sensor_msgs/CompressedImage image_frame

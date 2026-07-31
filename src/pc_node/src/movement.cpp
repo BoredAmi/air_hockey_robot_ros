@@ -78,12 +78,33 @@ bool MovementController::startEgmServer() {
     return true;
 }
 
-bool MovementController::moveTo(cv::Point2f tablePosition) {
+bool MovementController::moveTo(cv::Point2f tablePosition, uint64_t detectionTimestampUs) {
     std::cout << "Setting target table position to: (" << tablePosition.x << ", " << tablePosition.y << ")" << std::endl;
     std::lock_guard<std::mutex> lock(targetMutex_);
-    
+
     targetTablePosition_ = tablePosition;
+    targetDetectionTimestampUs_ = detectionTimestampUs;
     return true;
+}
+
+float MovementController::getDetectionToSendLatencyMs() const {
+    return lastDetectionToSendLatencyMs_.load();
+}
+
+void MovementController::updatePuckPosition(cv::Point2f puckTablePosition) {
+    std::lock_guard<std::mutex> lock(targetMutex_);
+    puckTablePosition_ = puckTablePosition;
+}
+
+bool MovementController::puckAlreadyPastRobot(cv::Point2f puckTable, cv::Point2f robotTargetTable) const {
+    if (puckTable.x < 0 || puckTable.y < 0) return false;  // no live puck data yet
+    switch (config_.WHERE_DEFENSE_ZONE) {
+        case 0: return puckTable.y < robotTargetTable.y - PUCK_PAST_MARGIN_MM;  // top: approaches via decreasing y
+        case 1: return puckTable.y > robotTargetTable.y + PUCK_PAST_MARGIN_MM;  // bottom: increasing y
+        case 2: return puckTable.x < robotTargetTable.x - PUCK_PAST_MARGIN_MM;  // left: decreasing x
+        case 3: return puckTable.x > robotTargetTable.x + PUCK_PAST_MARGIN_MM;  // right: increasing x
+        default: return false;
+    }
 }
 
 cv::Point2f MovementController::getSentPosition() const {
@@ -148,12 +169,28 @@ void MovementController::egmWorkerLoop() {
             continue;
         }
         cv::Point2f localTarget;
+        uint64_t localDetectionTimestampUs = 0;
+        cv::Point2f localPuckTable;
         {
             std::lock_guard<std::mutex> lock(targetMutex_);
             localTarget = targetTablePosition_;
+            localDetectionTimestampUs = targetDetectionTimestampUs_;
+            localPuckTable = puckTablePosition_;
         }
 
         bool haveTarget = (localTarget.x >= 0 && localTarget.y >= 0);
+        if (!haveTarget) {
+            // No active target - the next real one is a fresh engagement, so
+            // don't let this session's re-arm distance block it.
+            lastStruckTarget_ = cv::Point2f(1e9f, 1e9f);
+        } else if (localDetectionTimestampUs > 0) {
+            uint64_t nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            if (nowUs > localDetectionTimestampUs) {
+                lastDetectionToSendLatencyMs_.store(
+                    static_cast<float>(nowUs - localDetectionTimestampUs) / 1000.0f);
+            }
+        }
         cv::Point2f normalTargetTable = haveTarget ? localTarget : idleTablePosition();
         cv::Point2f normalTargetRobot = TableToRobotCoordinates(normalTargetTable);
 
@@ -165,9 +202,12 @@ void MovementController::egmWorkerLoop() {
         }
 
         if (motionPhase_ == MotionPhase::Tracking && haveTarget &&
-            cv::norm(actualRobotNow - normalTargetRobot) <= ARRIVAL_TOLERANCE_MM) {
+            cv::norm(actualRobotNow - normalTargetRobot) <= ARRIVAL_TOLERANCE_MM &&
+            cv::norm(normalTargetTable - lastStruckTarget_) > STRIKE_REARM_DISTANCE_MM &&
+            !puckAlreadyPastRobot(localPuckTable, normalTargetTable)) {
             motionPhase_ = MotionPhase::Striking;
             strikeBaseTable_ = normalTargetTable;
+            lastStruckTarget_ = normalTargetTable;
             strikeStartTime_ = std::chrono::steady_clock::now();
         }
 

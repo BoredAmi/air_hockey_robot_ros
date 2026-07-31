@@ -20,6 +20,10 @@ MovementNode::MovementNode(const rclcpp::NodeOptions & options)
         "/robot/sent_position", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
     actual_position_pub_ = this->create_publisher<std_msgs::msg::Float32MultiArray>(
         "/robot/actual_position", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
+    latency_pub_ = this->create_publisher<std_msgs::msg::Float32>(
+        "/robot/detection_to_send_latency_ms", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
+    target_accepted_pub_ = this->create_publisher<std_msgs::msg::Bool>(
+        "/robot/target_accepted", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
     position_pub_timer_ = this->create_wall_timer(
         std::chrono::milliseconds(20),
         [this]() {
@@ -35,6 +39,10 @@ MovementNode::MovementNode(const rclcpp::NodeOptions & options)
             std_msgs::msg::Float32MultiArray actual_msg;
             actual_msg.data = {actualTable.x, actualTable.y, actualRobot.x, actualRobot.y};
             actual_position_pub_->publish(actual_msg);
+
+            std_msgs::msg::Float32 latency_msg;
+            latency_msg.data = mover_.getDetectionToSendLatencyMs();
+            latency_pub_->publish(latency_msg);
         });
 
     RCLCPP_INFO(this->get_logger(),
@@ -70,11 +78,13 @@ void MovementNode::load_parameters() {
     this->declare_parameter<double>("min_speed_for_robot_mm_s", 100.0);
     this->declare_parameter<double>("defense_zone_buffer_mm", 450.0);
     this->declare_parameter<int>("track_hold_duration_ms", 1000);
+    this->declare_parameter<double>("min_time_to_entry_s", 0.15);
 
     min_speed_for_robot_mm_s_ = this->get_parameter("min_speed_for_robot_mm_s").as_double();
     defense_zone_buffer_mm_ = this->get_parameter("defense_zone_buffer_mm").as_double();
     track_hold_duration_us_ =
         static_cast<uint64_t>(this->get_parameter("track_hold_duration_ms").as_int()) * 1000ULL;
+    min_time_to_entry_s_ = this->get_parameter("min_time_to_entry_s").as_double();
 }
 
 
@@ -113,11 +123,18 @@ bool MovementNode::computePuckBehindZoneEntrance(int8_t zoneIndex, float puckX, 
 void MovementNode::entry_callback(const air_hockey_robot_msgs::msg::PredictedEntry::SharedPtr msg) {
     cv::Point2f targetTablePos(-1.0f, -1.0f);
 
+    mover_.updatePuckPosition(cv::Point2f(msg->puck_x, msg->puck_y));
+
     bool puckBehindZone = computePuckBehindZoneEntrance(msg->defense_zone_index, msg->puck_x, msg->puck_y);
     bool puckTooCloseToZone = computePuckTooCloseToZone(
         msg->defense_zone_index, msg->puck_x, msg->puck_y, msg->puck_in_defense_zone);
 
-    if (!puckBehindZone && !puckTooCloseToZone && msg->valid) {
+    bool targetAccepted = !puckBehindZone && !puckTooCloseToZone && msg->valid;
+    std_msgs::msg::Bool accepted_msg;
+    accepted_msg.data = targetAccepted;
+    target_accepted_pub_->publish(accepted_msg);
+
+    if (targetAccepted) {
         /*
         double speed = std::hypot(msg->vx, msg->vy);
 
@@ -159,7 +176,7 @@ void MovementNode::entry_callback(const air_hockey_robot_msgs::msg::PredictedEnt
     }
 
 
-    mover_.moveTo(targetTablePos);
+    mover_.moveTo(targetTablePos, lastMoveTimeUs_);
 }
 
 } // namespace pc_node

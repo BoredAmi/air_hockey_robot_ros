@@ -111,9 +111,9 @@ cv::Point2f TrajectoryPredictor::predictEntryToDefenseZone(uint64_t currentTimes
     cv::Point2f pos(state(0), state(1));
     double vx = state(2), vy = state(3);
 
-    // Reject if puck has negligible velocity (standing still or nearly still)
+
     double velocityMagnitude = std::hypot(vx, vy);
-    const double MIN_VELOCITY_THRESHOLD = 5.0;  // mm/s
+    const double MIN_VELOCITY_THRESHOLD = 200.0;  // mm/s
     if (velocityMagnitude < MIN_VELOCITY_THRESHOLD) {
         return cv::Point2f(-1, -1);
     }
@@ -212,21 +212,23 @@ cv::Point2f TrajectoryPredictor::predictEntryToDefenseZone(uint64_t currentTimes
         if (minTime == std::numeric_limits<double>::infinity()) break;
         if (timeAccum + minTime > maxTime) break;
 
-        // stop if we hit the opposite wall for the defense zone
+        // Stop simulating once the puck hits either the opponent's wall or our
+        // own wall (missed the zone) - both mean it's too late to matter, no
+        // point predicting further bounces past that point.
         // wall indices: 0=left,1=right,2=bottom,3=top
         bool stop = false;
         switch (currentZoneIndex_) {
-            case 0: // top -> opposite is bottom (2)
-                if (wall == 2) stop = true;
+            case 0: // top: our wall=top(3), opposite=bottom(2)
+                if (wall == 2 || wall == 3) stop = true;
                 break;
-            case 1: // bottom -> opposite is top (3)
-                if (wall == 3) stop = true;
+            case 1: // bottom: our wall=bottom(2), opposite=top(3)
+                if (wall == 3 || wall == 2) stop = true;
                 break;
-            case 2: // left -> opposite is right (1)
-                if (wall == 1) stop = true;
+            case 2: // left: our wall=left(0), opposite=right(1)
+                if (wall == 1 || wall == 0) stop = true;
                 break;
-            case 3: // right -> opposite is left (0)
-                if (wall == 0) stop = true;
+            case 3: // right: our wall=right(1), opposite=left(0)
+                if (wall == 0 || wall == 1) stop = true;
                 break;
             default: break;
         }

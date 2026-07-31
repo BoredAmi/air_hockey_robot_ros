@@ -11,6 +11,8 @@
 #include <air_hockey_robot_msgs/msg/puck_detection.hpp>
 #include <air_hockey_robot_msgs/msg/predicted_entry.hpp>
 #include <std_msgs/msg/float32_multi_array.hpp>
+#include <std_msgs/msg/float32.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include "config.hpp"
 
 #include <opencv2/opencv.hpp>
@@ -185,6 +187,7 @@ int main(int argc, char** argv) {
     GraphStrip speedGraph("predkosc (mm/s)", cv::Scalar(0, 255, 0));
     GraphStrip confGraph("confidence", cv::Scalar(255, 100, 100), 300, 0.0f, 1.0f);
     GraphStrip posErrGraph("blad pozycji robota (mm)", cv::Scalar(180, 0, 255));
+    GraphStrip latencyGraph("detekcja->wyslanie (ms)", cv::Scalar(255, 180, 0));
 
     cv::Point2f latestSentPos(-1.0f, -1.0f);
     cv::Point2f latestSentPosRobot(-1.0f, -1.0f);
@@ -192,13 +195,12 @@ int main(int argc, char** argv) {
     cv::Point2f latestActualPos(-1.0f, -1.0f);
     cv::Point2f latestActualPosRobot(-1.0f, -1.0f);
     bool hasActualPos = false;
+    float latestLatencyMs = 0.0f;
+    bool hasLatency = false;
 
-    // Snapshot the whole canvas each time a new defensive move starts (predValid
-    // false->true), so we get one image per attack showing where the puck was and
-    // what angle/timing was in play - for bottleneck hunting after the fact.
     const std::filesystem::path snapshotDir = "logs/kalman_snapshots";
     std::filesystem::create_directories(snapshotDir);
-    bool prevPredValid = false;
+    bool prevTargetAccepted = false;
     bool pendingSnapshot = false;
     uint64_t snapshotPuckTimestamp = 0;
 
@@ -231,12 +233,6 @@ int main(int argc, char** argv) {
             latestFiltered.timeToEntry = msg->time_to_entry;
             latestFiltered.timestamp = msg->timestamp;
             hasFiltered = true;
-
-            if (msg->valid && !prevPredValid) {
-                pendingSnapshot = true;
-                snapshotPuckTimestamp = msg->timestamp;
-            }
-            prevPredValid = msg->valid;
 
             float speed = std::hypot(msg->vx, msg->vy);
             speedGraph.push(speed);
@@ -280,6 +276,26 @@ int main(int argc, char** argv) {
             }
         });
 
+    auto latency_sub = node->create_subscription<std_msgs::msg::Float32>(
+        "/robot/detection_to_send_latency_ms", rclcpp::QoS(rclcpp::KeepLast(5)).best_effort(),
+        [&](const std_msgs::msg::Float32::SharedPtr msg) {
+            std::lock_guard<std::mutex> lk(data_mutex);
+            latestLatencyMs = msg->data;
+            hasLatency = true;
+            latencyGraph.push(latestLatencyMs);
+        });
+
+    auto target_accepted_sub = node->create_subscription<std_msgs::msg::Bool>(
+        "/robot/target_accepted", rclcpp::QoS(rclcpp::KeepLast(5)).best_effort(),
+        [&](const std_msgs::msg::Bool::SharedPtr msg) {
+            std::lock_guard<std::mutex> lk(data_mutex);
+            if (msg->data && !prevTargetAccepted) {
+                pendingSnapshot = true;
+                snapshotPuckTimestamp = latestFiltered.timestamp;
+            }
+            prevTargetAccepted = msg->data;
+        });
+
     const int TABLE_VIEW_W = 900;
     const int TABLE_VIEW_H = 460;
     const int MARGIN = 30;
@@ -314,7 +330,7 @@ int main(int argc, char** argv) {
     const int GRAPH_H = 100;
     const int GRAPH_GAP = 6;
     const int WINDOW_W = TABLE_VIEW_W + ROBOT_VIEW_GAP + ROBOT_VIEW_W;
-    const int WINDOW_H = TABLE_VIEW_H + 5 * (GRAPH_H + GRAPH_GAP) + GRAPH_GAP;
+    const int WINDOW_H = TABLE_VIEW_H + 6 * (GRAPH_H + GRAPH_GAP) + GRAPH_GAP;
     cv::resizeWindow("Kalman Monitor", WINDOW_W, WINDOW_H);
 
     std::cout << "kalman_monitor - sterowanie:" << std::endl;
@@ -422,12 +438,24 @@ int main(int argc, char** argv) {
 
             float posErr = (hasSentPos && hasActualPos)
                 ? static_cast<float>(cv::norm(latestActualPos - latestSentPos)) : 0.0f;
+            // Puck position at the moment behind the currently-displayed "sent"
+            // target - i.e. what the robot's move command was actually based on.
+            char puckBuf[256];
+            snprintf(puckBuf, sizeof(puckBuf),
+                "puck: raw(%.0f, %.0f)  kalman(%.0f, %.0f)  predicted entry(%.0f, %.0f)",
+                hasRaw ? latestRaw.pos.x : 0.0f, hasRaw ? latestRaw.pos.y : 0.0f,
+                hasFiltered ? latestFiltered.pos.x : 0.0f, hasFiltered ? latestFiltered.pos.y : 0.0f,
+                (hasFiltered && latestFiltered.predValid) ? latestFiltered.predEntry.x : 0.0f,
+                (hasFiltered && latestFiltered.predValid) ? latestFiltered.predEntry.y : 0.0f);
+            cv::putText(canvas, puckBuf, cv::Point(MARGIN, TABLE_VIEW_H - 44),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(0, 255, 0), 1);
+
             char statsBuf[256];
             snprintf(statsBuf, sizeof(statsBuf),
-                "conf: %.2f  speed: %.1f mm/s  err: %.1f mm",
+                "conf: %.2f  speed: %.1f mm/s  err: %.1f mm  latency: %.1f ms",
                 hasFiltered ? latestFiltered.confidence : 0.0f,
                 hasFiltered ? std::hypot(latestFiltered.vel.x, latestFiltered.vel.y) : 0.0f,
-                posErr);
+                posErr, hasLatency ? latestLatencyMs : 0.0f);
             cv::putText(canvas, statsBuf, cv::Point(MARGIN, TABLE_VIEW_H - 26),
                         cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(220, 220, 220), 1);
 
@@ -446,7 +474,8 @@ int main(int argc, char** argv) {
             errYGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H)); y += GRAPH_H + GRAPH_GAP;
             speedGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H)); y += GRAPH_H + GRAPH_GAP;
             confGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H)); y += GRAPH_H + GRAPH_GAP;
-            posErrGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H));
+            posErrGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H)); y += GRAPH_H + GRAPH_GAP;
+            latencyGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H));
 
             if (pendingSnapshot) {
                 char filename[128];
@@ -469,6 +498,7 @@ int main(int argc, char** argv) {
             speedGraph.values.clear();
             confGraph.values.clear();
             posErrGraph.values.clear();
+            latencyGraph.values.clear();
             rawTrail.clear();
             filteredTrail.clear();
             rawByTimestamp.clear();

@@ -27,7 +27,7 @@ ENDIF
     EGMActPose egmID1 \Tool:=tool0 \WObj:=wobj0,
                corr_frame, EGM_FRAME_WOBJ,
                sensor_frame, EGM_FRAME_WOBJ
-               \x:=lin_mm \y:=lin_mm \z:=lin_mm \SampleRate:=4 \maxspeeddeviation:=1000;
+               \x:=lin_mm \y:=lin_mm \z:=lin_mm \SampleRate:=4 \maxspeeddeviation:=3000;
 
     EGMRunPose egmID1, EGM_STOP_HOLD \x \y \z \CondTime:=0.01 \RampInTime:=0.001 \RampOutTime:=0.001 \PosCorrGain:=1.0;
 

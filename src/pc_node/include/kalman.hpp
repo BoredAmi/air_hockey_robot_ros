@@ -16,6 +16,7 @@ public:
 
 private:
     double sigma_a_;
+    double friction_decel_;
     Eigen::VectorXd state_;
     Eigen::MatrixXd P_;  // Covariance
     Eigen::MatrixXd F_;  // State transition

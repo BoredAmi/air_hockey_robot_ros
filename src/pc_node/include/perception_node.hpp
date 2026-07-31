@@ -3,8 +3,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <air_hockey_robot_msgs/msg/puck_state.hpp>
 #include <air_hockey_robot_msgs/msg/puck_detection.hpp>
-#include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
+#include <opencv2/aruco.hpp>
 
 #include <thread>
 #include <mutex>
@@ -19,6 +19,7 @@ struct DetectorConfig {
     int PUCK_THRESHOLD;
     double PUCK_MIN_AREA;
     double PUCK_MAX_AREA;
+    int PUCK_ARUCO_ID;
     double PHYSICAL_TABLE_WIDTH;   // mm
     double PHYSICAL_TABLE_HEIGHT;  // mm
     int TABLE_WIDTH;               // px (fallback)
@@ -48,6 +49,10 @@ private:
     bool saveCachedPerspective(const std::string& filename = "table_perspective.yml");
 
     DetectorConfig config_;
+
+    // Puck is identified by an AprilTag 16h5 marker rather than a color/shape blob. small change but more reliable in our shitty garage
+    cv::Ptr<cv::aruco::Dictionary> arucoDict_;
+    cv::Ptr<cv::aruco::DetectorParameters> arucoParams_;
 
     cv::Mat cameraMatrix_;
     cv::Mat distCoeffs_;

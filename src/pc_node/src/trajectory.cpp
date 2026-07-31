@@ -29,7 +29,7 @@ void TrajectoryPredictor::addMeasurement(const PuckPosition& measurement) {
     
     kalmanFilter_.update(meas);
     Eigen::VectorXd state = kalmanFilter_.getState(); 
-    std::ofstream logger("/home/cymbergaj/air_hockey_robot/build/trajectory_log.csv", std::ios::app);
+    std::ofstream logger("logs/trajectory_log.csv", std::ios::app);
     if (logger.is_open()) {
         logger << measurement.timestamp << ","
                << measurement.position.x << ","
@@ -176,7 +176,7 @@ cv::Point2f TrajectoryPredictor::predictEntryToDefenseZone(uint64_t currentTimes
     }
 
     const double maxTime = 2.0; // 2s
-    const int maxBounces = 5;
+    const int maxBounces = 2;
     double timeAccum = 0.0;
 
     for (int bounce = 0; bounce < maxBounces && timeAccum < maxTime; ++bounce) {

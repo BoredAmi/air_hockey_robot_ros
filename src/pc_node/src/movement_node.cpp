@@ -68,7 +68,7 @@ Config MovementNode::load_config_parameters() {
 
 void MovementNode::load_parameters() {
     this->declare_parameter<double>("min_speed_for_robot_mm_s", 100.0);
-    this->declare_parameter<double>("defense_zone_buffer_mm", 100.0);
+    this->declare_parameter<double>("defense_zone_buffer_mm", 450.0);
     this->declare_parameter<int>("track_hold_duration_ms", 1000);
 
     min_speed_for_robot_mm_s_ = this->get_parameter("min_speed_for_robot_mm_s").as_double();
@@ -91,12 +91,11 @@ bool MovementNode::computeMovingTowardZone(int8_t zoneIndex, float vx, float vy)
 
 bool MovementNode::computePuckTooCloseToZone(int8_t zoneIndex, float puckX, float puckY, bool alreadyInZone) const {
     if (alreadyInZone) return true;
-
     switch (zoneIndex) {
-        case 0: return puckX < config_.DEFENSE_ZONE_WIDTH + defense_zone_buffer_mm_;
-        case 1: return puckX > config_.PHYSICAL_TABLE_WIDTH - config_.DEFENSE_ZONE_WIDTH - defense_zone_buffer_mm_;
-        case 2: return puckY < config_.DEFENSE_ZONE_HEIGHT + defense_zone_buffer_mm_;
-        case 3: return puckY > config_.PHYSICAL_TABLE_HEIGHT - config_.DEFENSE_ZONE_HEIGHT - defense_zone_buffer_mm_;
+        case 0: return puckY < config_.DEFENSE_ZONE_HEIGHT + defense_zone_buffer_mm_;
+        case 1: return puckY > config_.PHYSICAL_TABLE_HEIGHT - config_.DEFENSE_ZONE_HEIGHT - defense_zone_buffer_mm_;
+        case 2: return puckX < config_.DEFENSE_ZONE_WIDTH + defense_zone_buffer_mm_;
+        case 3: return puckX > config_.PHYSICAL_TABLE_WIDTH - config_.DEFENSE_ZONE_WIDTH - defense_zone_buffer_mm_;
         default: return false;
     }
 }
@@ -115,8 +114,10 @@ void MovementNode::entry_callback(const air_hockey_robot_msgs::msg::PredictedEnt
     cv::Point2f targetTablePos(-1.0f, -1.0f);
 
     bool puckBehindZone = computePuckBehindZoneEntrance(msg->defense_zone_index, msg->puck_x, msg->puck_y);
+    bool puckTooCloseToZone = computePuckTooCloseToZone(
+        msg->defense_zone_index, msg->puck_x, msg->puck_y, msg->puck_in_defense_zone);
 
-    if (!puckBehindZone && msg->valid) {
+    if (!puckBehindZone && !puckTooCloseToZone && msg->valid) {
         /*
         double speed = std::hypot(msg->vx, msg->vy);
 

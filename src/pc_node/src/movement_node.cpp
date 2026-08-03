@@ -123,7 +123,7 @@ bool MovementNode::computePuckBehindZoneEntrance(int8_t zoneIndex, float puckX, 
 void MovementNode::entry_callback(const air_hockey_robot_msgs::msg::PredictedEntry::SharedPtr msg) {
     cv::Point2f targetTablePos(-1.0f, -1.0f);
 
-    mover_.updatePuckPosition(cv::Point2f(msg->puck_x, msg->puck_y));
+    mover_.updatePuckPosition(cv::Point2f(msg->puck_x, msg->puck_y), cv::Point2f(msg->vx, msg->vy));
 
     bool puckBehindZone = computePuckBehindZoneEntrance(msg->defense_zone_index, msg->puck_x, msg->puck_y);
     bool puckTooCloseToZone = computePuckTooCloseToZone(

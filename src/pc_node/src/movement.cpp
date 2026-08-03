@@ -91,9 +91,10 @@ float MovementController::getDetectionToSendLatencyMs() const {
     return lastDetectionToSendLatencyMs_.load();
 }
 
-void MovementController::updatePuckPosition(cv::Point2f puckTablePosition) {
+void MovementController::updatePuckPosition(cv::Point2f puckTablePosition, cv::Point2f puckVelocityTable) {
     std::lock_guard<std::mutex> lock(targetMutex_);
     puckTablePosition_ = puckTablePosition;
+    puckVelocityTable_ = puckVelocityTable;
 }
 
 bool MovementController::puckAlreadyPastRobot(cv::Point2f puckTable, cv::Point2f robotTargetTable) const {
@@ -104,6 +105,16 @@ bool MovementController::puckAlreadyPastRobot(cv::Point2f puckTable, cv::Point2f
         case 2: return puckTable.x < robotTargetTable.x - PUCK_PAST_MARGIN_MM;  // left: decreasing x
         case 3: return puckTable.x > robotTargetTable.x + PUCK_PAST_MARGIN_MM;  // right: increasing x
         default: return false;
+    }
+}
+
+cv::Point2f MovementController::defaultStrikeDirection() const {
+    switch (config_.WHERE_DEFENSE_ZONE) {
+        case 0: return cv::Point2f(0.0f, 1.0f);   // top: strike away from the wall (increasing y)
+        case 1: return cv::Point2f(0.0f, -1.0f);  // bottom: decreasing y
+        case 2: return cv::Point2f(1.0f, 0.0f);   // left: increasing x
+        case 3: return cv::Point2f(-1.0f, 0.0f);  // right: decreasing x
+        default: return cv::Point2f(-1.0f, 0.0f);
     }
 }
 
@@ -171,11 +182,13 @@ void MovementController::egmWorkerLoop() {
         cv::Point2f localTarget;
         uint64_t localDetectionTimestampUs = 0;
         cv::Point2f localPuckTable;
+        cv::Point2f localPuckVelocity;
         {
             std::lock_guard<std::mutex> lock(targetMutex_);
             localTarget = targetTablePosition_;
             localDetectionTimestampUs = targetDetectionTimestampUs_;
             localPuckTable = puckTablePosition_;
+            localPuckVelocity = puckVelocityTable_;
         }
 
         bool haveTarget = (localTarget.x >= 0 && localTarget.y >= 0);
@@ -209,10 +222,17 @@ void MovementController::egmWorkerLoop() {
             strikeBaseTable_ = normalTargetTable;
             lastStruckTarget_ = normalTargetTable;
             strikeStartTime_ = std::chrono::steady_clock::now();
+            float puckSpeed = static_cast<float>(cv::norm(localPuckVelocity));
+            if (puckSpeed >= MIN_STRIKE_DIRECTION_SPEED_MM_S) {
+                strikeDirection_ = -localPuckVelocity / puckSpeed;
+            } else {
+                strikeDirection_ = defaultStrikeDirection();
+            }
         }
 
         cv::Point2f targetTable = (motionPhase_ == MotionPhase::Striking)
-            ? cv::Point2f(strikeBaseTable_.x - STRIKE_FORWARD_MM, strikeBaseTable_.y)
+            ? cv::Point2f(strikeBaseTable_.x + strikeDirection_.x * STRIKE_FORWARD_MM,
+                          strikeBaseTable_.y + strikeDirection_.y * STRIKE_FORWARD_MM)
             : normalTargetTable;
         cv::Point2f targetRobot = TableToRobotCoordinates(targetTable);
 

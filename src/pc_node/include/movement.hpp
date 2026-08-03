@@ -37,10 +37,7 @@ public:
     // domain), used to measure end-to-end detection-to-send latency. Pass 0
     // when tablePosition is just the idle/invalid sentinel.
     bool moveTo(cv::Point2f tablePosition, uint64_t detectionTimestampUs);
-    // Live puck table position, kept fresh independent of whether there's an
-    // active accepted target - used to tell whether the puck has already
-    // passed the robot's current position before committing to a strike.
-    void updatePuckPosition(cv::Point2f puckTablePosition);
+    void updatePuckPosition(cv::Point2f puckTablePosition, cv::Point2f puckVelocityTable);
     void stop();
     cv::Point2f TableToRobotCoordinates(cv::Point2f tablePosition) const;
     cv::Point2f RobotToTableCoordinates(cv::Point2f robotPosition) const;
@@ -70,11 +67,17 @@ private:
     // where the puck used to be.
     bool puckAlreadyPastRobot(cv::Point2f puckTable, cv::Point2f robotTargetTable) const;
     static constexpr float PUCK_PAST_MARGIN_MM = 15.0f;
+    cv::Point2f defaultStrikeDirection() const;
+    static constexpr float MIN_STRIKE_DIRECTION_SPEED_MM_S = 20.0f;
 
 
     enum class MotionPhase { Tracking, Striking };
     MotionPhase motionPhase_ = MotionPhase::Tracking;
     cv::Point2f strikeBaseTable_{-1.0f, -1.0f};
+    // Unit vector captured at the moment the strike triggers: reverse of the
+    // puck's incoming velocity, so the strike sends it back roughly the way it
+    // came instead of a fixed lateral punch regardless of approach angle.
+    cv::Point2f strikeDirection_{-1.0f, 0.0f};
     std::chrono::steady_clock::time_point strikeStartTime_;
     static constexpr float ARRIVAL_TOLERANCE_MM = 20.0f;
     static constexpr float STRIKE_FORWARD_MM = 130.0f;
@@ -110,6 +113,7 @@ private:
     cv::Point2f targetTablePosition_{-1.0f, -1.0f};
     uint64_t targetDetectionTimestampUs_{0};
     cv::Point2f puckTablePosition_{-1.0f, -1.0f};
+    cv::Point2f puckVelocityTable_{0.0f, 0.0f};
     std::atomic<float> lastDetectionToSendLatencyMs_{0.0f};
 
     // Robot-frame (post TableToRobotCoordinates) mm, so the send loop doesn't need a lock

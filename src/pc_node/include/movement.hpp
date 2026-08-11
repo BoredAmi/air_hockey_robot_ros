@@ -70,8 +70,69 @@ private:
     cv::Point2f defaultStrikeDirection() const;
     static constexpr float MIN_STRIKE_DIRECTION_SPEED_MM_S = 20.0f;
 
+    // Measured robot-frame reach envelope: max forward (x) reach as a
+    // function of lateral (y) position, sampled at three points (right,
+    // front-center, left) and linearly interpolated between them. Used to
+    // decide when the puck is close enough for the robot to proactively
+    // drive at it and push it toward the opponent (Attacking phase), and to
+    // clamp attack targets so they never ask for more reach than measured.
+    struct ReachPoint { float y; float xMax; };
+    static constexpr ReachPoint REACH_ENVELOPE[3] = {
+        {41.0f, 227.0f},
+        {317.0f, 318.0f},
+        {610.0f, 212.0f},
+    };
+    float attackEnvelopeMaxX(float y) const;
+    bool puckWithinAttackEnvelope(cv::Point2f puckRobot) const;
+    // Pucks this close to the near edge (robot base) are ignored for attack -
+    // not enough room to retract for a windup before pushing through them.
+    static constexpr float ATTACK_MIN_X_MM = 80.0f;
 
-    enum class MotionPhase { Tracking, Striking };
+    // Attack only engages a puck that has been sitting nearly still (not one
+    // we're chasing mid-flight) - a fast puck is handled by the normal
+    // predicted-entry Tracking/Striking path instead.
+    static constexpr float PUCK_STALL_SPEED_MM_S = 20.0f;
+    static constexpr std::chrono::milliseconds PUCK_STALL_DURATION{1000};
+    bool puckStalled_ = false;
+    std::chrono::steady_clock::time_point puckStallStartTime_;
+
+    // Attack is a two-stage windup: retract to the near edge of our reach at
+    // the puck's y (so there's room to build up speed), then drive forward
+    // through the puck's x to push it. attackPuckTable_ freezes the puck's
+    // table position for the duration of one attack run.
+    // Hold: after the push lands, stay put for a beat before releasing back
+    // to normal tracking - going straight from the push target to wherever
+    // tracking wants next was slamming the arm back at full speed.
+    // Retreat: after the hold, ease back to the retract point at a limited
+    // speed before finally handing control back to Tracking, instead of
+    // snapping straight to whatever Tracking's next target happens to be.
+    enum class AttackStage { Retract, Push, Hold, Retreat };
+    AttackStage attackStage_ = AttackStage::Retract;
+    cv::Point2f attackPuckTable_{-1.0f, -1.0f};
+    std::chrono::steady_clock::time_point attackStageStartTime_;
+    static constexpr float ATTACK_RETRACT_X_MM = 40.0f;
+    static constexpr float ATTACK_PUSH_OVERSHOOT_MM = 80.0f;
+    // Push stage ends once the arm actually arrives at the push target (not
+    // after a fixed hold time, which could cut the swing off before contact);
+    // this timeout is just a fallback in case the target is unreachable.
+    static constexpr std::chrono::milliseconds ATTACK_PUSH_TIMEOUT{20000};
+    static constexpr std::chrono::milliseconds ATTACK_HOLD_DURATION{2000};
+    static constexpr std::chrono::milliseconds ATTACK_RETREAT_TIMEOUT{2000};
+
+    // Push and Retreat are speed-limited (unlike every other move, which
+    // streams the raw target straight through) so the commanded position
+    // never outruns what the joints can actually track - the fast, large
+    // jump on the way back out of an attack was tripping a "J3 out of
+    // predicted position" fault on the real arm.
+    static constexpr float ATTACK_RETRACT_SPEED_MM_S = 400.0f;
+    static constexpr float ATTACK_PUSH_SPEED_MM_S = 800.0f;
+    static constexpr float ATTACK_RETREAT_SPEED_MM_S = 200.0f;
+    cv::Point2f attackRateLimitedRobot_{0.0f, 0.0f};
+    std::chrono::steady_clock::time_point attackRateLimitTime_;
+    cv::Point2f rateLimitTowards(cv::Point2f current, cv::Point2f desired, float maxSpeedMmS,
+                                  std::chrono::steady_clock::time_point& lastTime) const;
+
+    enum class MotionPhase { Tracking, Striking, Attacking };
     MotionPhase motionPhase_ = MotionPhase::Tracking;
     cv::Point2f strikeBaseTable_{-1.0f, -1.0f};
     // Unit vector captured at the moment the strike triggers: reverse of the

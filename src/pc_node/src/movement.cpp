@@ -3,6 +3,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <cmath>
+#include <algorithm>
 
 
 
@@ -118,6 +119,38 @@ cv::Point2f MovementController::defaultStrikeDirection() const {
     }
 }
 
+float MovementController::attackEnvelopeMaxX(float y) const {
+    if (y <= REACH_ENVELOPE[0].y) return REACH_ENVELOPE[0].xMax;
+    if (y >= REACH_ENVELOPE[2].y) return REACH_ENVELOPE[2].xMax;
+    if (y <= REACH_ENVELOPE[1].y) {
+        float t = (y - REACH_ENVELOPE[0].y) / (REACH_ENVELOPE[1].y - REACH_ENVELOPE[0].y);
+        return REACH_ENVELOPE[0].xMax + t * (REACH_ENVELOPE[1].xMax - REACH_ENVELOPE[0].xMax);
+    }
+    float t = (y - REACH_ENVELOPE[1].y) / (REACH_ENVELOPE[2].y - REACH_ENVELOPE[1].y);
+    return REACH_ENVELOPE[1].xMax + t * (REACH_ENVELOPE[2].xMax - REACH_ENVELOPE[1].xMax);
+}
+
+bool MovementController::puckWithinAttackEnvelope(cv::Point2f puckRobot) const {
+    if (puckRobot.y < REACH_ENVELOPE[0].y || puckRobot.y > REACH_ENVELOPE[2].y) return false;
+    return puckRobot.x >= ATTACK_MIN_X_MM && puckRobot.x <= attackEnvelopeMaxX(puckRobot.y);
+}
+
+cv::Point2f MovementController::rateLimitTowards(cv::Point2f current, cv::Point2f desired, float maxSpeedMmS,
+                                                  std::chrono::steady_clock::time_point& lastTime) const {
+    auto now = std::chrono::steady_clock::now();
+    float dt = std::chrono::duration<float>(now - lastTime).count();
+    lastTime = now;
+    if (dt <= 0.0f || dt > 0.5f) return current;  // first call / stale gap - hold, don't jump
+
+    cv::Point2f delta = desired - current;
+    float dist = static_cast<float>(cv::norm(delta));
+    float maxStep = maxSpeedMmS * dt;
+    if (dist > maxStep && dist > 0.0f) {
+        delta *= (maxStep / dist);
+    }
+    return current + delta;
+}
+
 cv::Point2f MovementController::getSentPosition() const {
     return RobotToTableCoordinates(cv::Point2f(lastSentRobotX_.load(), lastSentRobotY_.load()));
 }
@@ -209,35 +242,122 @@ void MovementController::egmWorkerLoop() {
 
         cv::Point2f actualRobotNow(lastActualRobotX_.load(), lastActualRobotY_.load());
 
-        if (motionPhase_ == MotionPhase::Striking &&
-            std::chrono::steady_clock::now() - strikeStartTime_ >= STRIKE_HOLD_DURATION) {
+        bool puckValid = (localPuckTable.x >= 0 && localPuckTable.y >= 0);
+        cv::Point2f puckRobotNow = puckValid ? TableToRobotCoordinates(localPuckTable) : cv::Point2f(-1.0f, -1.0f);
+        bool puckInAttackZone = puckValid && puckWithinAttackEnvelope(puckRobotNow);
+
+        if (!puckInAttackZone) {
+            puckStalled_ = false;
+        } else {
+            float puckSpeedNow = static_cast<float>(cv::norm(localPuckVelocity));
+            if (puckSpeedNow >= PUCK_STALL_SPEED_MM_S) {
+                puckStalled_ = false;
+            } else if (!puckStalled_) {
+                puckStalled_ = true;
+                puckStallStartTime_ = std::chrono::steady_clock::now();
+            }
+        }
+        bool puckStalledLongEnough = puckStalled_ &&
+            (std::chrono::steady_clock::now() - puckStallStartTime_) >= PUCK_STALL_DURATION;
+
+        if (motionPhase_ != MotionPhase::Attacking && puckStalledLongEnough) {
+            motionPhase_ = MotionPhase::Attacking;
+            attackStage_ = AttackStage::Retract;
+            attackPuckTable_ = localPuckTable;
+            attackStageStartTime_ = std::chrono::steady_clock::now();
+            attackRateLimitedRobot_ = actualRobotNow;
+            attackRateLimitTime_ = attackStageStartTime_;
+        } else if (motionPhase_ == MotionPhase::Attacking && !puckInAttackZone) {
             motionPhase_ = MotionPhase::Tracking;
+            puckStalled_ = false;
         }
 
-        if (motionPhase_ == MotionPhase::Tracking && haveTarget &&
-            cv::norm(actualRobotNow - normalTargetRobot) <= ARRIVAL_TOLERANCE_MM &&
-            cv::norm(normalTargetTable - lastStruckTarget_) > STRIKE_REARM_DISTANCE_MM &&
-            !puckAlreadyPastRobot(localPuckTable, normalTargetTable)) {
-            motionPhase_ = MotionPhase::Striking;
-            strikeBaseTable_ = normalTargetTable;
-            lastStruckTarget_ = normalTargetTable;
-            strikeStartTime_ = std::chrono::steady_clock::now();
-            float puckSpeed = static_cast<float>(cv::norm(localPuckVelocity));
-            if (puckSpeed >= MIN_STRIKE_DIRECTION_SPEED_MM_S) {
-                strikeDirection_ = -localPuckVelocity / puckSpeed;
-            } else {
-                strikeDirection_ = defaultStrikeDirection();
+        if (motionPhase_ != MotionPhase::Attacking) {
+            if (motionPhase_ == MotionPhase::Striking &&
+                std::chrono::steady_clock::now() - strikeStartTime_ >= STRIKE_HOLD_DURATION) {
+                motionPhase_ = MotionPhase::Tracking;
+            }
+
+            if (motionPhase_ == MotionPhase::Tracking && haveTarget &&
+                cv::norm(actualRobotNow - normalTargetRobot) <= ARRIVAL_TOLERANCE_MM &&
+                cv::norm(normalTargetTable - lastStruckTarget_) > STRIKE_REARM_DISTANCE_MM &&
+                !puckAlreadyPastRobot(localPuckTable, normalTargetTable)) {
+                motionPhase_ = MotionPhase::Striking;
+                strikeBaseTable_ = normalTargetTable;
+                lastStruckTarget_ = normalTargetTable;
+                strikeStartTime_ = std::chrono::steady_clock::now();
+                float puckSpeed = static_cast<float>(cv::norm(localPuckVelocity));
+                if (puckSpeed >= MIN_STRIKE_DIRECTION_SPEED_MM_S) {
+                    strikeDirection_ = -localPuckVelocity / puckSpeed;
+                } else {
+                    strikeDirection_ = defaultStrikeDirection();
+                }
             }
         }
 
-        cv::Point2f targetTable = (motionPhase_ == MotionPhase::Striking)
-            ? cv::Point2f(strikeBaseTable_.x + strikeDirection_.x * STRIKE_FORWARD_MM,
-                          strikeBaseTable_.y + strikeDirection_.y * STRIKE_FORWARD_MM)
-            : normalTargetTable;
-        cv::Point2f targetRobot = TableToRobotCoordinates(targetTable);
+        cv::Point2f targetTable;
+        cv::Point2f targetRobot;
+        if (motionPhase_ == MotionPhase::Attacking) {
+            cv::Point2f puckRobot = TableToRobotCoordinates(attackPuckTable_);
 
-        lastSentRobotX_.store(targetRobot.x);
-        lastSentRobotY_.store(targetRobot.y);
+            cv::Point2f pushTarget(std::min(puckRobot.x + ATTACK_PUSH_OVERSHOOT_MM, attackEnvelopeMaxX(puckRobot.y)),
+                                    puckRobot.y);
+            cv::Point2f retreatTarget(ATTACK_RETRACT_X_MM, puckRobot.y);
+
+            if (attackStage_ == AttackStage::Retract) {
+                attackRateLimitedRobot_ = rateLimitTowards(attackRateLimitedRobot_, retreatTarget,
+                                                            ATTACK_RETRACT_SPEED_MM_S, attackRateLimitTime_);
+                targetRobot = attackRateLimitedRobot_;
+                if (cv::norm(actualRobotNow - retreatTarget) <= ARRIVAL_TOLERANCE_MM) {
+                    attackStage_ = AttackStage::Push;
+                    attackStageStartTime_ = std::chrono::steady_clock::now();
+                    attackRateLimitedRobot_ = actualRobotNow;
+                    attackRateLimitTime_ = attackStageStartTime_;
+                }
+            } else if (attackStage_ == AttackStage::Push) {
+                attackRateLimitedRobot_ =
+                    rateLimitTowards(attackRateLimitedRobot_, pushTarget, ATTACK_PUSH_SPEED_MM_S, attackRateLimitTime_);
+                targetRobot = attackRateLimitedRobot_;
+                bool arrivedAtPush = cv::norm(actualRobotNow - pushTarget) <= ARRIVAL_TOLERANCE_MM;
+                bool pushTimedOut =
+                    std::chrono::steady_clock::now() - attackStageStartTime_ >= ATTACK_PUSH_TIMEOUT;
+                if (arrivedAtPush || pushTimedOut) {
+                    attackStage_ = AttackStage::Hold;
+                    attackStageStartTime_ = std::chrono::steady_clock::now();
+                }
+            } else if (attackStage_ == AttackStage::Hold) {
+
+                targetRobot = pushTarget;
+                if (std::chrono::steady_clock::now() - attackStageStartTime_ >= ATTACK_HOLD_DURATION) {
+                    attackStage_ = AttackStage::Retreat;
+                    attackStageStartTime_ = std::chrono::steady_clock::now();
+                    attackRateLimitedRobot_ = actualRobotNow;
+                    attackRateLimitTime_ = attackStageStartTime_;
+                }
+            } else {
+
+                attackRateLimitedRobot_ = rateLimitTowards(attackRateLimitedRobot_, retreatTarget,
+                                                            ATTACK_RETREAT_SPEED_MM_S, attackRateLimitTime_);
+                targetRobot = attackRateLimitedRobot_;
+                bool arrivedAtRetreat = cv::norm(actualRobotNow - retreatTarget) <= ARRIVAL_TOLERANCE_MM;
+                bool retreatTimedOut =
+                    std::chrono::steady_clock::now() - attackStageStartTime_ >= ATTACK_RETREAT_TIMEOUT;
+                if (arrivedAtRetreat || retreatTimedOut) {
+                    motionPhase_ = MotionPhase::Tracking;
+                    lastStruckTarget_ = attackPuckTable_;
+                    // Require a fresh full PUCK_STALL_DURATION of stillness before
+                    puckStalled_ = false;
+                }
+            }
+            targetTable = RobotToTableCoordinates(targetRobot);
+        } else if (motionPhase_ == MotionPhase::Striking) {
+            targetTable = cv::Point2f(strikeBaseTable_.x + strikeDirection_.x * STRIKE_FORWARD_MM,
+                                       strikeBaseTable_.y + strikeDirection_.y * STRIKE_FORWARD_MM);
+            targetRobot = TableToRobotCoordinates(targetTable);
+        } else {
+            targetTable = normalTargetTable;
+            targetRobot = TableToRobotCoordinates(targetTable);
+        }
 
         std::cout << "EGM MOVE: table=(" << targetTable.x << ", " << targetTable.y
                    << ") robot=(" << targetRobot.x << ", " << targetRobot.y << ")" << std::endl;
@@ -252,10 +372,18 @@ void MovementController::egmWorkerLoop() {
         auto* cartesian = planned->mutable_cartesian();
 
         auto* pos = cartesian->mutable_pos();
-        if(targetRobot.x < 80.0f) targetRobot.x = 80.0f;
-        if(targetRobot.y < 80.0f) targetRobot.y = 80.0f;
-        if(targetRobot.x > config_.DEFENSE_ZONE_WIDTH + 100.0f) targetRobot.x = config_.DEFENSE_ZONE_WIDTH + 100.0f;
-        if(targetRobot.y > config_.PHYSICAL_TABLE_HEIGHT + 100.0f) targetRobot.y = config_.PHYSICAL_TABLE_HEIGHT+100.0f;
+        // Clamp to the measured reach envelope rather than the old fixed
+        // DEFENSE_ZONE_WIDTH+100 cap, which was far short of the arm's real
+        // forward reach and would have choked attack targets down to ~194mm.
+        float xFloor = (motionPhase_ == MotionPhase::Attacking && attackStage_ == AttackStage::Retract)
+            ? ATTACK_RETRACT_X_MM : 80.0f;
+        if (targetRobot.y < REACH_ENVELOPE[0].y) targetRobot.y = REACH_ENVELOPE[0].y;
+        if (targetRobot.y > REACH_ENVELOPE[2].y) targetRobot.y = REACH_ENVELOPE[2].y;
+        if (targetRobot.x < xFloor) targetRobot.x = xFloor;
+        float xCeil = attackEnvelopeMaxX(targetRobot.y);
+        if (targetRobot.x > xCeil) targetRobot.x = xCeil;
+        lastSentRobotX_.store(targetRobot.x);
+        lastSentRobotY_.store(targetRobot.y);
         pos->set_x(targetRobot.x);
         pos->set_y(targetRobot.y);
         pos->set_z(0.0f);

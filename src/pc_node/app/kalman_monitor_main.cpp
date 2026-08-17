@@ -22,6 +22,7 @@
 #include <cmath>
 #include <numeric>
 #include <filesystem>
+#include <chrono>
 
 namespace {
 
@@ -53,6 +54,12 @@ struct GraphStrip {
     cv::Scalar color2{0, 0, 0};
     bool hasSecond = false;
 
+    // Parallel to values - marks samples taken while a bounce's effect on
+    // the filter was still considered "live" (see BOUNCE_HOLD_SAMPLES),
+    // so error spikes from real bounce-induced filter lag are visually
+    // distinguishable from ordinary noise.
+    std::deque<bool> bounceFlags;
+
     explicit GraphStrip(const std::string& lbl, cv::Scalar col, size_t maxN = 300,
                          float fMin = 1.0f, float fMax = 0.0f)
         : label(lbl), maxSamples(maxN), fixedMin(fMin), fixedMax(fMax), color(col) {}
@@ -60,6 +67,11 @@ struct GraphStrip {
     void push(float v) {
         values.push_back(v);
         if (values.size() > maxSamples) values.pop_front();
+    }
+
+    void pushBounceFlag(bool flagged) {
+        bounceFlags.push_back(flagged);
+        if (bounceFlags.size() > maxSamples) bounceFlags.pop_front();
     }
 
     void enableSecond(const std::string& lbl2, cv::Scalar col2) {
@@ -95,6 +107,14 @@ struct GraphStrip {
             int zeroY = area.y + static_cast<int>(area.height * (1.0f - (0.0f - vmin) / (vmax - vmin)));
             cv::line(canvas, cv::Point(area.x, zeroY), cv::Point(area.x + area.width, zeroY),
                       cv::Scalar(70, 70, 70), 1);
+        }
+
+        for (size_t i = 0; i < bounceFlags.size(); ++i) {
+            if (!bounceFlags[i]) continue;
+            float t = static_cast<float>(i) / static_cast<float>(maxSamples - 1);
+            int x = area.x + static_cast<int>(t * area.width);
+            cv::line(canvas, cv::Point(x, area.y), cv::Point(x, area.y + area.height),
+                      cv::Scalar(0, 100, 255), 1);
         }
 
         if (values.size() >= 2) {
@@ -189,6 +209,18 @@ int main(int argc, char** argv) {
     GraphStrip posErrGraph("blad pozycji robota (mm)", cv::Scalar(180, 0, 255));
     GraphStrip latencyGraph("detekcja->wyslanie (ms)", cv::Scalar(255, 180, 0));
 
+    // Bounce detection: a real wall/paddle bounce reverses vx or vy sign
+    // abruptly while speed stays real (not noise near zero). The filter's
+    // predict step assumes smooth motion, so its position estimate lags for
+    // a few samples after a bounce until it re-converges - orange ticks on
+    // errXGraph/errYGraph mark that window so those error spikes are
+    // distinguishable from ordinary measurement noise.
+    float prevBounceVx = 0.0f, prevBounceVy = 0.0f;
+    bool havePrevBounceVel = false;
+    int bounceHoldSamples = 0;
+    const int BOUNCE_HOLD_SAMPLES = 5;
+    const float BOUNCE_MIN_SPEED_MM_S = 150.0f;
+
     cv::Point2f latestSentPos(-1.0f, -1.0f);
     cv::Point2f latestSentPosRobot(-1.0f, -1.0f);
     bool hasSentPos = false;
@@ -201,8 +233,20 @@ int main(int argc, char** argv) {
     const std::filesystem::path snapshotDir = "logs/kalman_snapshots";
     std::filesystem::create_directories(snapshotDir);
     bool prevTargetAccepted = false;
-    bool pendingSnapshot = false;
-    uint64_t snapshotPuckTimestamp = 0;
+    bool pendingBurstTrigger = false;
+
+
+    struct FrozenPred { bool valid = false; cv::Point2f entry{0.0f, 0.0f}; float timeToEntry = 0.0f; };
+    FrozenPred lastValidPred;
+    FrozenPred frozenPred;
+    bool haveFrozenPred = false;
+    bool recordingBurst = false;
+    std::filesystem::path currentBurstDir;
+    int burstFrameIndex = 0;
+    std::chrono::steady_clock::time_point burstRecordingStart;
+    std::chrono::steady_clock::time_point burstLastSampleTime;
+    const std::chrono::milliseconds BURST_DURATION{2000};
+    const std::chrono::milliseconds BURST_SAMPLE_INTERVAL{30};
 
     auto detection_sub = node->create_subscription<air_hockey_robot_msgs::msg::PuckDetection>(
         "/puck/detection", rclcpp::QoS(rclcpp::KeepLast(5)).best_effort(),
@@ -234,9 +278,31 @@ int main(int argc, char** argv) {
             latestFiltered.timestamp = msg->timestamp;
             hasFiltered = true;
 
+            if (msg->valid) {
+                lastValidPred.valid = true;
+                lastValidPred.entry = cv::Point2f(msg->x, msg->y);
+                lastValidPred.timeToEntry = msg->time_to_entry;
+            }
+
             float speed = std::hypot(msg->vx, msg->vy);
             speedGraph.push(speed);
             confGraph.push(msg->confidence);
+            if (havePrevBounceVel) {
+                bool speedOk = std::hypot(prevBounceVx, prevBounceVy) >= BOUNCE_MIN_SPEED_MM_S &&
+                                speed >= BOUNCE_MIN_SPEED_MM_S;
+                bool xFlipped = (prevBounceVx > 0.0f) != (msg->vx > 0.0f) &&
+                                 std::abs(prevBounceVx) >= BOUNCE_MIN_SPEED_MM_S * 0.5f &&
+                                 std::abs(msg->vx) >= BOUNCE_MIN_SPEED_MM_S * 0.5f;
+                bool yFlipped = (prevBounceVy > 0.0f) != (msg->vy > 0.0f) &&
+                                 std::abs(prevBounceVy) >= BOUNCE_MIN_SPEED_MM_S * 0.5f &&
+                                 std::abs(msg->vy) >= BOUNCE_MIN_SPEED_MM_S * 0.5f;
+                if (speedOk && (xFlipped || yFlipped)) {
+                    bounceHoldSamples = BOUNCE_HOLD_SAMPLES;
+                }
+            }
+            prevBounceVx = msg->vx;
+            prevBounceVy = msg->vy;
+            havePrevBounceVel = true;
 
             auto it = rawByTimestamp.find(msg->timestamp);
             if (it != rawByTimestamp.end()) {
@@ -244,6 +310,10 @@ int main(int argc, char** argv) {
                 float errY = it->second.pos.y - msg->puck_y;
                 errXGraph.push(errX);
                 errYGraph.push(errY);
+                bool bounceActive = bounceHoldSamples > 0;
+                errXGraph.pushBounceFlag(bounceActive);
+                errYGraph.pushBounceFlag(bounceActive);
+                if (bounceActive) bounceHoldSamples--;
                 rawByTimestamp.erase(it);
             }
         });
@@ -290,8 +360,7 @@ int main(int argc, char** argv) {
         [&](const std_msgs::msg::Bool::SharedPtr msg) {
             std::lock_guard<std::mutex> lk(data_mutex);
             if (msg->data && !prevTargetAccepted) {
-                pendingSnapshot = true;
-                snapshotPuckTimestamp = latestFiltered.timestamp;
+                pendingBurstTrigger = true;
             }
             prevTargetAccepted = msg->data;
         });
@@ -425,12 +494,19 @@ int main(int argc, char** argv) {
                 cv::arrowedLine(canvas, tableToView(latestFiltered.pos), vTip,
                                  cv::Scalar(255, 255, 0), 2, cv::LINE_AA, 0, 0.2);
 
-                if (latestFiltered.predValid) {
-                    cv::Point p = tableToView(latestFiltered.predEntry);
+                // Held at its frozen (trigger-time, last-valid) value for the
+                // duration of a burst so every saved frame compares against
+                // the same point, live otherwise.
+                bool showFrozen = recordingBurst && haveFrozenPred;
+                bool predValidToShow = showFrozen ? frozenPred.valid : latestFiltered.predValid;
+                cv::Point2f predEntryToShow = showFrozen ? frozenPred.entry : latestFiltered.predEntry;
+                float timeToEntryToShow = showFrozen ? frozenPred.timeToEntry : latestFiltered.timeToEntry;
+                if (predValidToShow) {
+                    cv::Point p = tableToView(predEntryToShow);
                     cv::line(canvas, p + cv::Point(-8, -8), p + cv::Point(8, 8), cv::Scalar(0, 0, 255), 2);
                     cv::line(canvas, p + cv::Point(-8, 8), p + cv::Point(8, -8), cv::Scalar(0, 0, 255), 2);
                     char buf[64];
-                    snprintf(buf, sizeof(buf), "t=%.2fs", latestFiltered.timeToEntry);
+                    snprintf(buf, sizeof(buf), "t=%.2fs", timeToEntryToShow);
                     cv::putText(canvas, buf, p + cv::Point(12, 0),
                                 cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(0, 0, 255), 1);
                 }
@@ -477,14 +553,38 @@ int main(int argc, char** argv) {
             posErrGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H)); y += GRAPH_H + GRAPH_GAP;
             latencyGraph.draw(canvas, cv::Rect(0, y, WINDOW_W, GRAPH_H));
 
-            if (pendingSnapshot) {
-                char filename[128];
-                snprintf(filename, sizeof(filename), "attack_%llu.png",
-                    static_cast<unsigned long long>(snapshotPuckTimestamp));
-                std::filesystem::path outPath = snapshotDir / filename;
-                cv::imwrite(outPath.string(), canvas);
-                std::cout << "Saved defense snapshot: " << outPath.string() << std::endl;
-                pendingSnapshot = false;
+            if (pendingBurstTrigger && !recordingBurst) {
+                pendingBurstTrigger = false;
+                char dirName[64];
+                snprintf(dirName, sizeof(dirName), "attack_%llu",
+                    static_cast<unsigned long long>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch()).count()));
+                currentBurstDir = snapshotDir / dirName;
+                std::filesystem::create_directories(currentBurstDir);
+                recordingBurst = true;
+                burstFrameIndex = 0;
+                burstRecordingStart = std::chrono::steady_clock::now();
+                burstLastSampleTime = std::chrono::steady_clock::time_point{};  // force an immediate first sample
+                frozenPred = lastValidPred;
+                haveFrozenPred = true;
+                std::cout << "Recording kalman monitor image burst: " << currentBurstDir.string() << std::endl;
+            }
+
+            if (recordingBurst) {
+                auto now = std::chrono::steady_clock::now();
+                if (now - burstLastSampleTime >= BURST_SAMPLE_INTERVAL) {
+                    char frameName[32];
+                    snprintf(frameName, sizeof(frameName), "frame_%03d.png", burstFrameIndex++);
+                    cv::imwrite((currentBurstDir / frameName).string(), canvas);
+                    burstLastSampleTime = now;
+                }
+                if (now - burstRecordingStart >= BURST_DURATION) {
+                    recordingBurst = false;
+                    std::cout << "Finished kalman monitor image burst: " << burstFrameIndex
+                               << " frames in " << currentBurstDir.string() << std::endl;
+                }
+                cv::circle(canvas, cv::Point(WINDOW_W - 20, 20), 8, cv::Scalar(0, 0, 255), -1);
             }
         }
 
@@ -494,7 +594,9 @@ int main(int argc, char** argv) {
         if (key == 'r' || key == 'R') {
             std::lock_guard<std::mutex> lk(data_mutex);
             errXGraph.values.clear();
+            errXGraph.bounceFlags.clear();
             errYGraph.values.clear();
+            errYGraph.bounceFlags.clear();
             speedGraph.values.clear();
             confGraph.values.clear();
             posErrGraph.values.clear();

@@ -28,6 +28,9 @@ public:
     cv::Point2f getCurrentPosition() const; 
     cv::Point2f getVelocity() const;        
 private:
+    bool nextBounce(cv::Point2f pos, cv::Point2f vel, double maxTime,
+                     cv::Point2f& hitPos, cv::Point2f& newVel, cv::Point2f& hitNormal, double& tHit) const;
+
     const Config& config_;
     int currentZoneIndex_;
     double zoneYMax, zoneYMin, zoneXMin, zoneXMax;

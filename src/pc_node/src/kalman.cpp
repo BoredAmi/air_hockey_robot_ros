@@ -20,9 +20,9 @@ KalmanFilter::KalmanFilter() {
           0, 1, 0, 0;
 
     Q_ = Eigen::MatrixXd::Zero(4, 4);
-    R_ = Eigen::MatrixXd::Identity(2, 2) * 0.974;
+    R_ = Eigen::MatrixXd::Identity(2, 2) * 0.887;
     sigma_a_ = 250.0;
-    friction_decel_ = 2701.65;
+    friction_decel_ = 0.0;
 }
 
 void KalmanFilter::reset() {

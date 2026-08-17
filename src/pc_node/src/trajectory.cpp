@@ -41,6 +41,81 @@ void TrajectoryPredictor::addMeasurement(const PuckPosition& measurement) {
     }
 }
 
+bool TrajectoryPredictor::nextBounce(cv::Point2f pos, cv::Point2f vel, double maxTime,
+                                      cv::Point2f& hitPos, cv::Point2f& newVel, cv::Point2f& hitNormal,
+                                      double& tHit) const {
+    const double W = config_.PHYSICAL_TABLE_WIDTH;
+    const double H = config_.PHYSICAL_TABLE_HEIGHT;
+    const double puckR = config_.PUCK_RADIUS_MM;
+    const double cornerR = std::max(0.0, config_.TABLE_CORNER_RADIUS_MM - puckR);
+
+    // Inset play boundary for the puck's CENTER.
+    const double xMin = puckR, xMax = W - puckR;
+    const double yMin = puckR, yMax = H - puckR;
+
+    double bestT = std::numeric_limits<double>::infinity();
+    cv::Point2f bestNormal(0.0f, 0.0f);
+
+    auto consider = [&](double t, cv::Point2f normal) {
+        if (t >= 1e-9 && t < bestT) { bestT = t; bestNormal = normal; }
+    };
+
+    // Straight segments, inset by cornerR from each corner along the edge -
+    // the corner region is handled separately by the arcs below.
+    if (vel.x < 0.0) {
+        double t = (xMin - pos.x) / vel.x;
+        double y = pos.y + vel.y * t;
+        if (y >= yMin + cornerR && y <= yMax - cornerR) consider(t, cv::Point2f(-1.0f, 0.0f));
+    } else if (vel.x > 0.0) {
+        double t = (xMax - pos.x) / vel.x;
+        double y = pos.y + vel.y * t;
+        if (y >= yMin + cornerR && y <= yMax - cornerR) consider(t, cv::Point2f(1.0f, 0.0f));
+    }
+    if (vel.y < 0.0) {
+        double t = (yMin - pos.y) / vel.y;
+        double x = pos.x + vel.x * t;
+        if (x >= xMin + cornerR && x <= xMax - cornerR) consider(t, cv::Point2f(0.0f, -1.0f));
+    } else if (vel.y > 0.0) {
+        double t = (yMax - pos.y) / vel.y;
+        double x = pos.x + vel.x * t;
+        if (x >= xMin + cornerR && x <= xMax - cornerR) consider(t, cv::Point2f(0.0f, 1.0f));
+    }
+
+    // Corner arcs: 4 circle centers, inset by cornerR from each true corner.
+    cv::Point2f centers[4] = {
+        cv::Point2f(static_cast<float>(xMin + cornerR), static_cast<float>(yMin + cornerR)),
+        cv::Point2f(static_cast<float>(xMax - cornerR), static_cast<float>(yMin + cornerR)),
+        cv::Point2f(static_cast<float>(xMax - cornerR), static_cast<float>(yMax - cornerR)),
+        cv::Point2f(static_cast<float>(xMin + cornerR), static_cast<float>(yMax - cornerR)),
+    };
+    for (const auto& c : centers) {
+        cv::Point2f d = pos - c;
+        double a = vel.x * vel.x + vel.y * vel.y;
+        if (a < 1e-9) continue;
+        double b = 2.0 * (d.x * vel.x + d.y * vel.y);
+        double cc = d.x * d.x + d.y * d.y - cornerR * cornerR;
+        double disc = b * b - 4.0 * a * cc;
+        if (disc < 0.0) continue;
+        double sq = std::sqrt(disc);
+        double t1 = (-b - sq) / (2.0 * a);
+        double t2 = (-b + sq) / (2.0 * a);
+        double t = (t1 >= 1e-9) ? t1 : t2;
+        if (t < 1e-9) continue;
+        cv::Point2f hitP(static_cast<float>(pos.x + vel.x * t), static_cast<float>(pos.y + vel.y * t));
+        cv::Point2f normal(static_cast<float>((hitP.x - c.x) / cornerR), static_cast<float>((hitP.y - c.y) / cornerR));
+        consider(t, normal);
+    }
+
+    if (!std::isfinite(bestT) || bestT > maxTime) return false;
+
+    tHit = bestT;
+    hitPos = cv::Point2f(static_cast<float>(pos.x + vel.x * bestT), static_cast<float>(pos.y + vel.y * bestT));
+    hitNormal = bestNormal;
+    float vDotN = vel.x * bestNormal.x + vel.y * bestNormal.y;
+    newVel = cv::Point2f(vel.x - 2.0f * vDotN * bestNormal.x, vel.y - 2.0f * vDotN * bestNormal.y);
+    return true;
+}
+
 cv::Point2f TrajectoryPredictor::predictPosition(uint64_t futureTimestamp) {
     if (!initialized_) return cv::Point2f(-1, -1);
 
@@ -50,57 +125,33 @@ cv::Point2f TrajectoryPredictor::predictPosition(uint64_t futureTimestamp) {
     Eigen::VectorXd state = kalmanFilter_.getState();  // [x, y, vx, vy]
     double timeLeft = dt;
     cv::Point2f pos(state(0), state(1));
-    double vx = state(2), vy = state(3);
-    const int maxBounces = 3; 
+    cv::Point2f vel(state(2), state(3));
+    const int maxBounces = 3;
 
     for (int bounce = 0; bounce < maxBounces && timeLeft > 0; ++bounce) {
-        // Calculate time to hit each boundary
-        double tx_left = (vx != 0) ? ((vx < 0) ? (0 - pos.x) / vx : 1e9) : 1e9;  // Hit left wall if moving left
-        double tx_right = (vx != 0) ? ((vx > 0) ? (config_.PHYSICAL_TABLE_WIDTH - pos.x) / vx : 1e9) : 1e9;  // Hit right wall if moving right
-        double ty_bottom = (vy != 0) ? ((vy < 0) ? (0 - pos.y) / vy : 1e9) : 1e9;  // Hit bottom wall if moving down
-        double ty_top = (vy != 0) ? ((vy > 0) ? (config_.PHYSICAL_TABLE_HEIGHT - pos.y) / vy : 1e9) : 1e9;  // Hit top wall if moving up
-
-
-        // Find the earliest hit time within remaining time
-        double t_hit = std::min({tx_left, tx_right, ty_bottom, timeLeft});
-        if (t_hit < 0 || t_hit > timeLeft) t_hit = timeLeft;  // No valid hit, just advance
-
-        // Move to hit point or end time
-        pos.x += vx * t_hit;
-        pos.y += vy * t_hit;
-        timeLeft -= t_hit;
-
-        if (timeLeft <= 0) break;  // Reached target time
-        // Mapping: 0=top, 1=bottom, 2=left, 3=right
-        // For the selected defense zone, reflect velocity on hits (bounces)
-        switch (currentZoneIndex_) {
-            case 0: // Top defense zone
-                if (t_hit == ty_top) vy = -vy;
-                if (t_hit == tx_left || t_hit == tx_right) vx = -vx;
-                break;
-            case 1: // Bottom defense zone
-                if (t_hit == ty_bottom) vy = -vy;
-                if (t_hit == tx_left || t_hit == tx_right) vx = -vx;
-                break;
-            case 2: // Left defense zone
-                if (t_hit == tx_left) vx = -vx;
-                if (t_hit == ty_bottom || t_hit == ty_top) vy = -vy;
-                break;
-            case 3: // Right defense zone
-                if (t_hit == tx_right) vx = -vx;
-                if (t_hit == ty_bottom || t_hit == ty_top) vy = -vy;
-                break;
-            default:
-                break;
+        cv::Point2f hitPos, newVel, hitNormal;
+        double tHit;
+        if (!nextBounce(pos, vel, timeLeft, hitPos, newVel, hitNormal, tHit)) {
+            pos.x += vel.x * timeLeft;
+            pos.y += vel.y * timeLeft;
+            timeLeft = 0.0;
+            break;
         }
+        pos = hitPos;
+        vel = newVel;
+        timeLeft -= tHit;
+    }
+    if (timeLeft > 0) {
+        pos.x += vel.x * timeLeft;
+        pos.y += vel.y * timeLeft;
     }
 
-
-    // Clamp to bounds if still out (rare)
-    if (pos.x < 0) pos.x = 0;
-    if (pos.x > config_.PHYSICAL_TABLE_WIDTH) pos.x = config_.PHYSICAL_TABLE_WIDTH;
-    if (pos.y < 0) pos.y = 0;
-    if (pos.y > config_.PHYSICAL_TABLE_HEIGHT) pos.y = config_.PHYSICAL_TABLE_HEIGHT;
+    // Clamp to bounds if still out (rare) - puck-radius-aware.
+    const double puckR = config_.PUCK_RADIUS_MM;
+    if (pos.x < puckR) pos.x = static_cast<float>(puckR);
+    if (pos.x > config_.PHYSICAL_TABLE_WIDTH - puckR) pos.x = static_cast<float>(config_.PHYSICAL_TABLE_WIDTH - puckR);
+    if (pos.y < puckR) pos.y = static_cast<float>(puckR);
+    if (pos.y > config_.PHYSICAL_TABLE_HEIGHT - puckR) pos.y = static_cast<float>(config_.PHYSICAL_TABLE_HEIGHT - puckR);
 
     return pos;
 }
@@ -171,6 +222,7 @@ cv::Point2f TrajectoryPredictor::predictEntryToDefenseZone(uint64_t currentTimes
         double entryStart = std::max(tZoneStart, yZoneStart);
         double entryEnd = std::min(tZoneEnd, yZoneEnd);
         if (entryStart <= entryEnd && entryStart >= 0.0) {
+            if (entryTimeSec) *entryTimeSec = entryStart;
             return cv::Point2f(pos.x + vx * entryStart, pos.y + vy * entryStart);
         }
     }
@@ -178,44 +230,42 @@ cv::Point2f TrajectoryPredictor::predictEntryToDefenseZone(uint64_t currentTimes
     const double maxTime = 2.0; // 2s
     const int maxBounces = 2;
     double timeAccum = 0.0;
+    cv::Point2f vel(static_cast<float>(vx), static_cast<float>(vy));
 
     for (int bounce = 0; bounce < maxBounces && timeAccum < maxTime; ++bounce) {
-        double tx_left = std::numeric_limits<double>::infinity();
-        double tx_right = std::numeric_limits<double>::infinity();
-        double ty_bottom = std::numeric_limits<double>::infinity();
-        double ty_top = std::numeric_limits<double>::infinity();
+        cv::Point2f hitPos, newVel, hitNormal;
+        double tHit;
+        bool haveBounce = nextBounce(pos, vel, maxTime - timeAccum, hitPos, newVel, hitNormal, tHit);
+        double segmentEnd = haveBounce ? tHit : (maxTime - timeAccum);
 
-        if (vx < 0.0) tx_left = -pos.x / vx;
-        else if (vx > 0.0) tx_right = (config_.PHYSICAL_TABLE_WIDTH - pos.x) / vx;
-
-        if (vy < 0.0) ty_bottom = -pos.y / vy;
-        else if (vy > 0.0) ty_top = (config_.PHYSICAL_TABLE_HEIGHT - pos.y) / vy;
-
-        double minTime = std::min({tx_left, tx_right, ty_bottom, ty_top});
-        int wall = -1;
-        if (minTime == tx_left) wall = 0;
-        else if (minTime == tx_right) wall = 1;
-        else if (minTime == ty_bottom) wall = 2;
-        else if (minTime == ty_top) wall = 3;
-
-        xInZone = computeInterval(pos.x, vx, zoneXMin, zoneXMax, tZoneStart, tZoneEnd);
-        yInZone = computeInterval(pos.y, vy, zoneYMin, zoneYMax, yZoneStart, yZoneEnd);
+        xInZone = computeInterval(pos.x, vel.x, zoneXMin, zoneXMax, tZoneStart, tZoneEnd);
+        yInZone = computeInterval(pos.y, vel.y, zoneYMin, zoneYMax, yZoneStart, yZoneEnd);
 
         if (xInZone && yInZone) {
             double entryStart = std::max(tZoneStart, yZoneStart);
             double entryEnd = std::min(tZoneEnd, yZoneEnd);
-            if (entryStart <= entryEnd && entryStart >= 0.0 && entryStart <= minTime && timeAccum + entryStart <= maxTime) {
-                return cv::Point2f(pos.x + vx * entryStart, pos.y + vy * entryStart);
+            if (entryStart <= entryEnd && entryStart >= 0.0 && entryStart <= segmentEnd &&
+                timeAccum + entryStart <= maxTime) {
+                if (entryTimeSec) *entryTimeSec = timeAccum + entryStart;
+                return cv::Point2f(pos.x + vel.x * entryStart, pos.y + vel.y * entryStart);
             }
         }
 
-        if (minTime == std::numeric_limits<double>::infinity()) break;
-        if (timeAccum + minTime > maxTime) break;
+        if (!haveBounce) break;
 
         // Stop simulating once the puck hits either the opponent's wall or our
         // own wall (missed the zone) - both mean it's too late to matter, no
-        // point predicting further bounces past that point.
+        // point predicting further bounces past that point. A corner-arc hit's
+        // normal is a diagonal blend of both walls it sits between; the
+        // dominant axis decides which wall it counts as for this check.
         // wall indices: 0=left,1=right,2=bottom,3=top
+        int wall;
+        if (std::abs(hitNormal.x) >= std::abs(hitNormal.y)) {
+            wall = (hitNormal.x < 0) ? 0 : 1;
+        } else {
+            wall = (hitNormal.y < 0) ? 2 : 3;
+        }
+
         bool stop = false;
         switch (currentZoneIndex_) {
             case 0: // top: our wall=top(3), opposite=bottom(2)
@@ -234,18 +284,9 @@ cv::Point2f TrajectoryPredictor::predictEntryToDefenseZone(uint64_t currentTimes
         }
         if (stop) break;
 
-        // Advance to the bounce point and reflect
-        pos.x += vx * minTime;
-        pos.y += vy * minTime;
-        timeAccum += minTime;
-
-        switch (wall) {
-            case 0: vx = -vx; break;
-            case 1: vx = -vx; break;
-            case 2: vy = -vy; break;
-            case 3: vy = -vy; break;
-            default: break;
-        }
+        pos = hitPos;
+        vel = newVel;
+        timeAccum += tHit;
     }
 
     return cv::Point2f(-1, -1);

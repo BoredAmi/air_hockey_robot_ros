@@ -119,20 +119,24 @@ cv::Point2f MovementController::defaultStrikeDirection() const {
     }
 }
 
+cv::Point2f MovementController::reachCircleCenter() const {
+    return cv::Point2f(-BASE_TO_EDGE_OFFSET_MM, config_.PHYSICAL_TABLE_HEIGHT / 2.0f);
+}
+
 float MovementController::attackEnvelopeMaxX(float y) const {
-    if (y <= REACH_ENVELOPE[0].y) return REACH_ENVELOPE[0].xMax;
-    if (y >= REACH_ENVELOPE[2].y) return REACH_ENVELOPE[2].xMax;
-    if (y <= REACH_ENVELOPE[1].y) {
-        float t = (y - REACH_ENVELOPE[0].y) / (REACH_ENVELOPE[1].y - REACH_ENVELOPE[0].y);
-        return REACH_ENVELOPE[0].xMax + t * (REACH_ENVELOPE[1].xMax - REACH_ENVELOPE[0].xMax);
-    }
-    float t = (y - REACH_ENVELOPE[1].y) / (REACH_ENVELOPE[2].y - REACH_ENVELOPE[1].y);
-    return REACH_ENVELOPE[1].xMax + t * (REACH_ENVELOPE[2].xMax - REACH_ENVELOPE[1].xMax);
+    cv::Point2f center = reachCircleCenter();
+    float dy = y - center.y;
+    float discriminant = REACH_RADIUS_MM * REACH_RADIUS_MM - dy * dy;
+    if (discriminant < 0.0f) return center.x;  // y is outside the reachable circle entirely
+    return center.x + std::sqrt(discriminant);
 }
 
 bool MovementController::puckWithinAttackEnvelope(cv::Point2f puckRobot) const {
-    if (puckRobot.y < REACH_ENVELOPE[0].y || puckRobot.y > REACH_ENVELOPE[2].y) return false;
-    return puckRobot.x >= ATTACK_MIN_X_MM && puckRobot.x <= attackEnvelopeMaxX(puckRobot.y);
+    cv::Point2f center = reachCircleCenter();
+    float dx = puckRobot.x - center.x;
+    float dy = puckRobot.y - center.y;
+    bool insideReach = (dx * dx + dy * dy) <= REACH_RADIUS_MM * REACH_RADIUS_MM;
+    return insideReach && puckRobot.x >= ATTACK_MIN_X_MM;
 }
 
 cv::Point2f MovementController::rateLimitTowards(cv::Point2f current, cv::Point2f desired, float maxSpeedMmS,
@@ -372,13 +376,12 @@ void MovementController::egmWorkerLoop() {
         auto* cartesian = planned->mutable_cartesian();
 
         auto* pos = cartesian->mutable_pos();
-        // Clamp to the measured reach envelope rather than the old fixed
-        // DEFENSE_ZONE_WIDTH+100 cap, which was far short of the arm's real
-        // forward reach and would have choked attack targets down to ~194mm.
         float xFloor = (motionPhase_ == MotionPhase::Attacking && attackStage_ == AttackStage::Retract)
-            ? ATTACK_RETRACT_X_MM : 80.0f;
-        if (targetRobot.y < REACH_ENVELOPE[0].y) targetRobot.y = REACH_ENVELOPE[0].y;
-        if (targetRobot.y > REACH_ENVELOPE[2].y) targetRobot.y = REACH_ENVELOPE[2].y;
+            ? ATTACK_RETRACT_X_MM : 60.0f;
+        float yMin = reachCircleCenter().y - REACH_RADIUS_MM;
+        float yMax = reachCircleCenter().y + REACH_RADIUS_MM;
+        if (targetRobot.y < yMin) targetRobot.y = yMin;
+        if (targetRobot.y > yMax) targetRobot.y = yMax;
         if (targetRobot.x < xFloor) targetRobot.x = xFloor;
         float xCeil = attackEnvelopeMaxX(targetRobot.y);
         if (targetRobot.x > xCeil) targetRobot.x = xCeil;

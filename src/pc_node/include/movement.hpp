@@ -37,7 +37,17 @@ public:
     // domain), used to measure end-to-end detection-to-send latency. Pass 0
     // when tablePosition is just the idle/invalid sentinel.
     bool moveTo(cv::Point2f tablePosition, uint64_t detectionTimestampUs);
-    void updatePuckPosition(cv::Point2f puckTablePosition, cv::Point2f puckVelocityTable);
+    // confidence/timeToEntrySec come straight from the same PredictedEntry
+    // message (0 / -1 when no valid prediction). predictionTimestampUs is
+    // deliberately NOT that message's own timestamp field - that's stamped
+    // by the Pi's camera node, a different machine with no guaranteed clock
+    // sync to this one. The caller instead passes its own PC-local receipt
+    // time, so arrivalUs = predictionTimestampUs + timeToEntrySec is computed
+    // entirely on this machine's clock, matching the system_clock::now()
+    // used to check it in egmWorkerLoop - used to time the Striking stroke,
+    // see STRIKE_LEAD_TIME_S.
+    void updatePuckPosition(cv::Point2f puckTablePosition, cv::Point2f puckVelocityTable,
+                             float confidence, float timeToEntrySec, uint64_t predictionTimestampUs);
     void stop();
     cv::Point2f TableToRobotCoordinates(cv::Point2f tablePosition) const;
     cv::Point2f RobotToTableCoordinates(cv::Point2f robotPosition) const;
@@ -66,6 +76,10 @@ private:
     cv::Point2f reachCircleCenter() const;
     float attackEnvelopeMaxX(float y) const;
     bool puckWithinAttackEnvelope(cv::Point2f puckRobot) const;
+    static constexpr float MIN_FORWARD_REACH_MM = 80.0f;
+
+    float lateralBandSpanMm() const;
+    static constexpr float PADDLE_BAND_MARGIN_MM = 12.0f;
     // Pucks this close to the near edge (robot base) are ignored for attack -
     // not enough room to retract for a windup before pushing through them.
     static constexpr float ATTACK_MIN_X_MM = 80.0f;
@@ -78,6 +92,8 @@ private:
     bool puckStalled_ = false;
     std::chrono::steady_clock::time_point puckStallStartTime_;
 
+    static constexpr bool ATTACKING_ENABLED = true;
+    static constexpr bool STRIKING_ENABLED = true;
 
     enum class AttackStage { Retract, Push, Hold, Retreat };
     AttackStage attackStage_ = AttackStage::Retract;
@@ -110,6 +126,17 @@ private:
     cv::Point2f lastStruckTarget_{1e9f, 1e9f};
     static constexpr float STRIKE_REARM_DISTANCE_MM = 100.0f;
 
+    // Once the paddle has arrived at the intercept point, don't jab forward
+    // immediately - wait until the puck is actually about to be there.
+    // STRIKE_LEAD_TIME_S is how long before the predicted arrival to launch
+    // the stroke (an estimate of how long the forward stroke itself takes to
+    // connect - tune against real hits). Only used when the prediction is
+    // trustworthy (confidence >= STRIKE_MIN_CONFIDENCE and a valid
+    // time_to_entry is available); otherwise falls back to firing immediately
+    // on arrival, same as before.
+    static constexpr float STRIKE_LEAD_TIME_S = 0.08f;
+    static constexpr float STRIKE_MIN_CONFIDENCE = 0.5f;
+
     Config config_;
     uint64_t egm_seqno;
     bool hasFeedback;
@@ -126,6 +153,8 @@ private:
     #else
         socklen_t robotAddrLen;
     #endif
+    std::chrono::steady_clock::time_point lastEgmLogTime_{};
+    static constexpr std::chrono::milliseconds EGM_LOG_INTERVAL{500};
 
     std::thread egmThread_;
     std::atomic<bool> isRunning_{false};
@@ -134,6 +163,9 @@ private:
     uint64_t targetDetectionTimestampUs_{0};
     cv::Point2f puckTablePosition_{-1.0f, -1.0f};
     cv::Point2f puckVelocityTable_{0.0f, 0.0f};
+    float puckConfidence_{0.0f};
+    float puckTimeToEntrySec_{-1.0f};
+    uint64_t puckPredictionTimestampUs_{0};
     std::atomic<float> lastDetectionToSendLatencyMs_{0.0f};
     std::atomic<float> lastSentRobotX_{0.0f};
     std::atomic<float> lastSentRobotY_{0.0f};

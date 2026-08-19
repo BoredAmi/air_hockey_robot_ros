@@ -1,4 +1,5 @@
 #include "trajectory_node.hpp"
+#include <cmath>
 
 namespace pc_node {
 
@@ -87,6 +88,20 @@ rcl_interfaces::msg::SetParametersResult TrajectoryNode::on_parameter_change(
     return result;
 }
 
+void TrajectoryNode::updateBounceState(float vx, float vy) {
+    if (havePrevBounceVel_) {
+        float deltaSpeed = std::hypot(vx - prevBounceVx_, vy - prevBounceVy_);
+        if (deltaSpeed >= BOUNCE_DELTA_SPEED_MM_S) {
+            samplesSinceBounce_ = 0;
+        } else if (samplesSinceBounce_ < BOUNCE_HOLD_SAMPLES) {
+            samplesSinceBounce_++;
+        }
+    }
+    prevBounceVx_ = vx;
+    prevBounceVy_ = vy;
+    havePrevBounceVel_ = true;
+}
+
 void TrajectoryNode::detection_callback(const air_hockey_robot_msgs::msg::PuckDetection::SharedPtr msg) {
     air_hockey_robot_msgs::msg::PredictedEntry out;
     out.timestamp = msg->timestamp;
@@ -126,15 +141,25 @@ void TrajectoryNode::detection_callback(const air_hockey_robot_msgs::msg::PuckDe
         out.puck_in_defense_zone = predictor_->isInDefenseZone(puckPos.position);
         out.defense_zone_index = static_cast<int8_t>(config_.WHERE_DEFENSE_ZONE);
 
+        updateBounceState(velocity.x, velocity.y);
+
         if (!out.puck_in_defense_zone) {
             double entryTimeSec = -1.0;
-            cv::Point2f predicted = predictor_->predictEntryToDefenseZone(msg->timestamp, &entryTimeSec);
-            if (predicted.x >= 0 && predicted.y >= 0) {
+            std::vector<cv::Point2f> path;
+            cv::Point2f predicted = predictor_->predictEntryToDefenseZone(
+                msg->timestamp, &entryTimeSec, &path);
+            if (predicted.x >= 0 && predicted.y >= 0 && !bounceHoldActive()) {
                 out.valid = true;
                 out.x = predicted.x;
                 out.y = predicted.y;
                 out.confidence = static_cast<float>(predictor_->getVelocityConfidence());
                 out.time_to_entry = static_cast<float>(entryTimeSec);
+                out.path_x.reserve(path.size());
+                out.path_y.reserve(path.size());
+                for (const auto& p : path) {
+                    out.path_x.push_back(p.x);
+                    out.path_y.push_back(p.y);
+                }
             }
         }
     }

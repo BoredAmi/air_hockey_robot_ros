@@ -52,6 +52,12 @@ private:
     std::map<int, cv::Point2f> tableMarkerLayout_;  // marker id -> table-frame mm position
     cv::Mat tableHomography_;                       // undistorted-pixel -> table mm
     bool haveTableHomography_ = false;
+    static constexpr float MAX_PLAUSIBLE_PUCK_SPEED_MM_S = 15000.0f;
+    cv::Point2f lastAcceptedPuckTable_{-1.0f, -1.0f};
+    uint64_t lastAcceptedTimestamp_ = 0;
+    cv::Point2f pendingCandidateTable_{-1.0f, -1.0f};
+    uint64_t pendingCandidateTimestamp_ = 0;
+    bool havePendingCandidate_ = false;
 
     std::thread processing_thread_;
     std::mutex queue_mutex_;

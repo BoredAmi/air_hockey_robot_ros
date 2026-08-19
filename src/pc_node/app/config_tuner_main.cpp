@@ -102,7 +102,10 @@ int main(int argc, char** argv) {
     bool running = true;
 
     std::mutex pred_mutex;
-    struct Pred { bool valid=false; float x=0.0f; float y=0.0f; float time_to_entry=0.0f; float confidence=0.0f; } last_pred;
+    struct Pred {
+        bool valid=false; float x=0.0f; float y=0.0f; float time_to_entry=0.0f; float confidence=0.0f;
+        std::vector<cv::Point2f> path;  // start pos, bounce waypoints, entry point
+    } last_pred;
     Pred lastValidPred;
     auto pred_node = std::make_shared<rclcpp::Node>("config_tuner_pred_sub");
     auto pred_sub = pred_node->create_subscription<air_hockey_robot_msgs::msg::PredictedEntry>(
@@ -114,6 +117,11 @@ int main(int argc, char** argv) {
             last_pred.y = msg->y;
             last_pred.time_to_entry = msg->time_to_entry;
             last_pred.confidence = msg->confidence;
+            last_pred.path.clear();
+            size_t pathLen = std::min(msg->path_x.size(), msg->path_y.size());
+            for (size_t i = 0; i < pathLen; ++i) {
+                last_pred.path.emplace_back(msg->path_x[i], msg->path_y[i]);
+            }
             if (msg->valid) {
                 lastValidPred = last_pred;
             }
@@ -328,13 +336,26 @@ int main(int argc, char** argv) {
             // the same point, live otherwise.
             {
                 std::lock_guard<std::mutex> lk(pred_mutex);
-                const Pred& shown = (recordingCroppedBurst && haveFrozenPred) ? frozenPred : last_pred;
+                bool showingFrozen = recordingCroppedBurst && haveFrozenPred;
+                const Pred& shown = showingFrozen ? frozenPred : last_pred;
                 if (shown.valid) {
+                    // Predicted path: start -> each bounce waypoint -> entry point.
+                    if (shown.path.size() >= 2) {
+                        std::vector<cv::Point> pathPts;
+                        pathPts.reserve(shown.path.size());
+                        for (const auto& pt : shown.path) pathPts.push_back(toPx(pt.x, pt.y));
+                        cv::polylines(cropped, pathPts, false, cv::Scalar(0, 0, 200), 1, cv::LINE_AA);
+                        for (size_t i = 1; i + 1 < pathPts.size(); ++i) {
+                            cv::circle(cropped, pathPts[i], 4, cv::Scalar(0, 0, 200), 1);
+                        }
+                    }
+
                     cv::Point p = toPx(shown.x, shown.y);
                     cv::line(cropped, p + cv::Point(-8, -8), p + cv::Point(8, 8), cv::Scalar(0, 0, 255), 2);
                     cv::line(cropped, p + cv::Point(-8, 8), p + cv::Point(8, -8), cv::Scalar(0, 0, 255), 2);
                     char buf[128];
-                    snprintf(buf, sizeof(buf), "t=%.3fs conf=%.2f", shown.time_to_entry, shown.confidence);
+                    snprintf(buf, sizeof(buf), "t=%.3fs conf=%.2f%s", shown.time_to_entry, shown.confidence,
+                             showingFrozen ? "  [FROZEN]" : "");
                     cv::putText(cropped, buf, p + cv::Point(12, -12), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 0, 255), 1);
                 }
             }

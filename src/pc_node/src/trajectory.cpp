@@ -18,8 +18,20 @@ void TrajectoryPredictor::addMeasurement(const PuckPosition& measurement) {
         return;
     }
 
-    double dt = (measurement.timestamp - lastTimestamp_) / 1000000.0;  
-    if (dt <= 0) return;  
+    double dt = (measurement.timestamp - lastTimestamp_) / 1000000.0;
+    // A non-positive or implausibly large dt means the timestamp sequence
+    // itself is untrustworthy right now - e.g. the Pi's clock got stepped
+    // backward/forward (chrony's makestep does exactly this on its first few
+    // corrections), not lastTimestamp_ being stale filter state. Resync to
+    // the new timestamp and skip just this one sample; the OLD behavior only
+    // returned without updating lastTimestamp_, which left it stuck in the
+    // past and made every future dt negative too - permanently freezing the
+    // filter until the process was restarted.
+    constexpr double MAX_REASONABLE_DT_S = 1.0;
+    if (dt <= 0 || dt > MAX_REASONABLE_DT_S) {
+        lastTimestamp_ = measurement.timestamp;
+        return;
+    }
     lastTimestamp_ = measurement.timestamp;
 
     Eigen::VectorXd meas(2);
@@ -155,43 +167,36 @@ cv::Point2f TrajectoryPredictor::predictPosition(uint64_t futureTimestamp) {
 
     return pos;
 }
-cv::Point2f TrajectoryPredictor::predictEntryToDefenseZone(uint64_t currentTimestamp, double* entryTimeSec) {
+cv::Point2f TrajectoryPredictor::predictEntryToDefenseZone(uint64_t currentTimestamp, double* entryTimeSec,
+                                                            std::vector<cv::Point2f>* pathOut) {
     if (!initialized_) return cv::Point2f(-1, -1);
 
     Eigen::VectorXd state = kalmanFilter_.getState();  // [x, y, vx, vy]
     cv::Point2f pos(state(0), state(1));
     double vx = state(2), vy = state(3);
 
+    std::vector<cv::Point2f> localPath{pos};
 
-    double velocityMagnitude = std::hypot(vx, vy);
-    const double MIN_VELOCITY_THRESHOLD = 200.0;  // mm/s
-    if (velocityMagnitude < MIN_VELOCITY_THRESHOLD) {
-        return cv::Point2f(-1, -1);
-    }
+    // No explicit minimum-speed rejection: a puck moving too slowly to
+    // matter almost never crosses the required distance within maxTime
+    // below anyway, so that already acts as the real filter - and gating on
+    // raw speed was rejecting genuinely-fast, newly-redirected pucks right
+    // after a bounce/hit, whenever the velocity estimate's magnitude was
+    // transiently depressed by blending the old/new direction vectors.
 
     // If already in zone, return current position
     if (pos.y <= zoneYMax && pos.y >= zoneYMin && pos.x >= zoneXMin && pos.x <= zoneXMax) {
+        if (pathOut) *pathOut = localPath;
         return pos;
     }
 
-    // Reject if moving away from the defense zone
-    // Mapping: 0=top, 1=bottom, 2=left, 3=right
-    switch (currentZoneIndex_) {
-        case 0: // Top defense zone: we expect negative vy (moving up) to enter
-            if (vy >= 0) return cv::Point2f(-1, -1);
-            break;
-        case 1: // Bottom defense zone: expect positive vy (moving down)
-            if (vy <= 0) return cv::Point2f(-1, -1);
-            break;
-        case 2: // Left defense zone: expect negative vx (moving left)
-            if (vx >= 0) return cv::Point2f(-1, -1);
-            break;
-        case 3: // Right defense zone: expect positive vx (moving right)
-            if (vx <= 0) return cv::Point2f(-1, -1);
-            break;
-        default:
-            break;
-    }
+    // No crude single-axis "moving away" pre-check here - a near-90-degree
+    // entry (e.g. right after a rounded-corner deflection) has a genuine
+    // component toward the zone that's very close to zero, and measurement
+    // noise flips its sign often enough to intermittently reject a puck
+    // that's actually heading in. computeInterval below already rejects
+    // true away-moving trajectories correctly (via its t < 0 check), using
+    // both velocity components together instead of one axis's sign alone.
 
     auto computeInterval = [&](double p, double v, double minVal, double maxVal, double& start, double& end) {
         if (minVal > maxVal) std::swap(minVal, maxVal);
@@ -212,6 +217,8 @@ cv::Point2f TrajectoryPredictor::predictEntryToDefenseZone(uint64_t currentTimes
         return true;
     };
 
+    const double maxTime = 2.0; // 2s
+
     // Fast path: check if direct trajectory crosses zone without bounces
     double tZoneStart, tZoneEnd;
     bool xInZone = computeInterval(pos.x, vx, zoneXMin, zoneXMax, tZoneStart, tZoneEnd);
@@ -221,13 +228,14 @@ cv::Point2f TrajectoryPredictor::predictEntryToDefenseZone(uint64_t currentTimes
     if (xInZone && yInZone) {
         double entryStart = std::max(tZoneStart, yZoneStart);
         double entryEnd = std::min(tZoneEnd, yZoneEnd);
-        if (entryStart <= entryEnd && entryStart >= 0.0) {
+        if (entryStart <= entryEnd && entryStart >= 0.0 && entryStart <= maxTime) {
             if (entryTimeSec) *entryTimeSec = entryStart;
-            return cv::Point2f(pos.x + vx * entryStart, pos.y + vy * entryStart);
+            cv::Point2f entryPoint(pos.x + vx * entryStart, pos.y + vy * entryStart);
+            if (pathOut) { localPath.push_back(entryPoint); *pathOut = localPath; }
+            return entryPoint;
         }
     }
 
-    const double maxTime = 2.0; // 2s
     const int maxBounces = 2;
     double timeAccum = 0.0;
     cv::Point2f vel(static_cast<float>(vx), static_cast<float>(vy));
@@ -247,7 +255,9 @@ cv::Point2f TrajectoryPredictor::predictEntryToDefenseZone(uint64_t currentTimes
             if (entryStart <= entryEnd && entryStart >= 0.0 && entryStart <= segmentEnd &&
                 timeAccum + entryStart <= maxTime) {
                 if (entryTimeSec) *entryTimeSec = timeAccum + entryStart;
-                return cv::Point2f(pos.x + vel.x * entryStart, pos.y + vel.y * entryStart);
+                cv::Point2f entryPoint(pos.x + vel.x * entryStart, pos.y + vel.y * entryStart);
+                if (pathOut) { localPath.push_back(entryPoint); *pathOut = localPath; }
+                return entryPoint;
             }
         }
 
@@ -287,6 +297,7 @@ cv::Point2f TrajectoryPredictor::predictEntryToDefenseZone(uint64_t currentTimes
         pos = hitPos;
         vel = newVel;
         timeAccum += tHit;
+        localPath.push_back(pos);
     }
 
     return cv::Point2f(-1, -1);
@@ -340,9 +351,11 @@ double TrajectoryPredictor::getVelocityConfidence() {
     Eigen::MatrixXd P = kalmanFilter_.getCovariance();
     double varVx = P(2, 2);
     double varVy = P(3, 3);
-    double confidenceVx = 1.0 / (1.0 + varVx); 
-    double confidenceVy = 1.0 / (1.0 + varVy);
-    return std::min(confidenceVx, confidenceVy); 
+    double sigmaA = kalmanFilter_.getSigmaA();
+    double scale = BASE_VELOCITY_VARIANCE_SCALE_MM2_S2 * (sigmaA / BASE_SIGMA_A) * (sigmaA / BASE_SIGMA_A);
+    double confidenceVx = 1.0 / (1.0 + varVx / scale);
+    double confidenceVy = 1.0 / (1.0 + varVy / scale);
+    return std::min(confidenceVx, confidenceVy);
 }
 
 cv::Point2f TrajectoryPredictor::getCurrentPosition() const {

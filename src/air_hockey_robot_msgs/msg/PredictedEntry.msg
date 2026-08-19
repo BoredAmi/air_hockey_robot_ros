@@ -12,3 +12,9 @@ float32 vx
 float32 vy
 bool puck_in_defense_zone
 int8 defense_zone_index
+
+# Predicted path waypoints (start position, then each bounce point, then the
+# final entry point at (x, y) above) - visualization only, empty when
+# valid=false. Parallel arrays, same length.
+float32[] path_x
+float32[] path_y

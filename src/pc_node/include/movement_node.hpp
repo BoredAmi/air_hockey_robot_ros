@@ -46,6 +46,8 @@ private:
     uint64_t track_hold_duration_us_;
     double min_time_to_entry_s_;
 
+    static constexpr float TARGET_DEADBAND_MM = 15.0f;
+
     cv::Point2f lastValidDefensePos_{-1.0f, -1.0f};
     bool trackTarget_ = false;
     uint64_t lastMoveTimeUs_ = 0;

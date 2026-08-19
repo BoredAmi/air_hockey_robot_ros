@@ -21,7 +21,7 @@ KalmanFilter::KalmanFilter() {
 
     Q_ = Eigen::MatrixXd::Zero(4, 4);
     R_ = Eigen::MatrixXd::Identity(2, 2) * 0.887;
-    sigma_a_ = 250.0;
+    sigma_a_ = 1000.0;
     friction_decel_ = 0.0;
 }
 

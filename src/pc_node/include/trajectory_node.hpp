@@ -21,6 +21,14 @@ private:
     rcl_interfaces::msg::SetParametersResult on_parameter_change(
         const std::vector<rclcpp::Parameter> & parameters);
 
+    void updateBounceState(float vx, float vy);
+    bool bounceHoldActive() const { return samplesSinceBounce_ < BOUNCE_HOLD_SAMPLES; }
+    float prevBounceVx_ = 0.0f, prevBounceVy_ = 0.0f;
+    bool havePrevBounceVel_ = false;
+    int samplesSinceBounce_ = 1000000;
+    static constexpr int BOUNCE_HOLD_SAMPLES = 2;
+    static constexpr float BOUNCE_DELTA_SPEED_MM_S = 300.0f;
+
     Config config_;
     std::unique_ptr<TrajectoryPredictor> predictor_;
 

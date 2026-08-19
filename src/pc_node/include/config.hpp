@@ -27,6 +27,9 @@ public:
     int PUCK_ARUCO_ID = 5; // AprilTag 16h5 marker ID attached to the puck
     float PUCK_RADIUS_MM = 40.0f; // physical puck radius (80mm diameter)
 
+    // Robot paddle parameters
+    float PADDLE_RADIUS_MM = 49.0f; // physical robot paddle radius (98mm diameter)
+
     // Robot configuration
     std::string ROBOT_IP = "10.25.74.172";  
     double TABLE_OFFSET_X = 0.0;             // Offset from table origin to robot origin in mm
@@ -79,6 +82,9 @@ public:
         PUCK_ARUCO_ID = 5;
         PUCK_RADIUS_MM = 40.0f;
 
+        // Robot paddle parameters
+        PADDLE_RADIUS_MM = 49.0f;
+
         // Robot configuration
         ROBOT_IP = "10.25.74.172";
         TABLE_OFFSET_X = 0.0;
@@ -100,6 +106,7 @@ private:
             {"robot_origin_corner", c.robot_origin_corner},
             {"PUCK_ARUCO_ID", c.PUCK_ARUCO_ID},
             {"PUCK_RADIUS_MM", c.PUCK_RADIUS_MM},
+            {"PADDLE_RADIUS_MM", c.PADDLE_RADIUS_MM},
             {"ROBOT_IP", c.ROBOT_IP},
             {"TABLE_OFFSET_X", c.TABLE_OFFSET_X},
             {"TABLE_OFFSET_Y", c.TABLE_OFFSET_Y},
@@ -119,6 +126,7 @@ private:
         c.robot_origin_corner = j.value("robot_origin_corner", 0);
         c.PUCK_ARUCO_ID = j.value("PUCK_ARUCO_ID", 5);
         c.PUCK_RADIUS_MM = j.value("PUCK_RADIUS_MM", 40.0f);
+        c.PADDLE_RADIUS_MM = j.value("PADDLE_RADIUS_MM", 49.0f);
         c.ROBOT_IP = j.value("ROBOT_IP", "10.25.74.172");
         c.TABLE_OFFSET_X = j.value("TABLE_OFFSET_X", 0.0);
         c.TABLE_OFFSET_Y = j.value("TABLE_OFFSET_Y", 0.0);

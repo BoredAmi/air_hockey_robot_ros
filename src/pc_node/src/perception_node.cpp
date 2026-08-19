@@ -130,12 +130,44 @@ void PerceptionNode::processing_loop() {
             findArucoMarkerCenterById(corners, ids, config_.PUCK_ARUCO_ID, puckImageCenter)) {
             std::vector<cv::Point2f> src{puckImageCenter}, dst;
             cv::perspectiveTransform(src, dst, tableHomography_);
+            cv::Point2f candidateTable = dst[0];
+            uint64_t ts = incoming.timestamp;
 
-            out_msg.is_detected = true;
-            out_msg.x = dst[0].x;
-            out_msg.y = dst[0].y;
-            out_msg.image_x = puckImageCenter.x;
-            out_msg.image_y = puckImageCenter.y;
+            bool implausibleFromLast = false;
+            if (lastAcceptedTimestamp_ > 0 && ts > lastAcceptedTimestamp_) {
+                double dtSec = static_cast<double>(ts - lastAcceptedTimestamp_) / 1e6;
+                double dist = cv::norm(candidateTable - lastAcceptedPuckTable_);
+                if (dtSec > 0.0 && dist / dtSec > MAX_PLAUSIBLE_PUCK_SPEED_MM_S) {
+                    implausibleFromLast = true;
+                }
+            }
+
+            bool accept = true;
+            if (implausibleFromLast) {
+                accept = false;
+                if (havePendingCandidate_ && ts > pendingCandidateTimestamp_) {
+                    double dtSec2 = static_cast<double>(ts - pendingCandidateTimestamp_) / 1e6;
+                    double dist2 = cv::norm(candidateTable - pendingCandidateTable_);
+                    if (dtSec2 > 0.0 && dist2 / dtSec2 <= MAX_PLAUSIBLE_PUCK_SPEED_MM_S) {
+                        accept = true;  // consecutive frames agree - real fast motion, not a glitch
+                    }
+                }
+            }
+
+            if (accept) {
+                out_msg.is_detected = true;
+                out_msg.x = candidateTable.x;
+                out_msg.y = candidateTable.y;
+                out_msg.image_x = puckImageCenter.x;
+                out_msg.image_y = puckImageCenter.y;
+                lastAcceptedPuckTable_ = candidateTable;
+                lastAcceptedTimestamp_ = ts;
+                havePendingCandidate_ = false;
+            } else {
+                pendingCandidateTable_ = candidateTable;
+                pendingCandidateTimestamp_ = ts;
+                havePendingCandidate_ = true;
+            }
         }
 
         puck_pub_->publish(out_msg);

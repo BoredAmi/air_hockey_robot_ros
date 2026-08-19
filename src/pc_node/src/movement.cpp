@@ -304,31 +304,44 @@ void MovementController::egmWorkerLoop() {
                 motionPhase_ = MotionPhase::Tracking;
             }
 
-            bool strikeTimingReady = true;
-            if (localPuckConfidence >= STRIKE_MIN_CONFIDENCE && localPuckTimeToEntrySec >= 0.0f &&
-                localPuckPredictionTimestampUs > 0) {
-                uint64_t nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::system_clock::now().time_since_epoch()).count();
-                uint64_t arrivalUs = localPuckPredictionTimestampUs +
-                    static_cast<uint64_t>(localPuckTimeToEntrySec * 1e6f);
-                uint64_t leadUs = static_cast<uint64_t>(STRIKE_LEAD_TIME_S * 1e6f);
-                strikeTimingReady = (nowUs + leadUs) >= arrivalUs;
-            }
-
-            if (STRIKING_ENABLED && motionPhase_ == MotionPhase::Tracking && haveTarget &&
+            bool readyToStrike = STRIKING_ENABLED && motionPhase_ == MotionPhase::Tracking && haveTarget &&
                 cv::norm(actualRobotNow - normalTargetRobot) <= ARRIVAL_TOLERANCE_MM &&
                 cv::norm(normalTargetTable - lastStruckTarget_) > STRIKE_REARM_DISTANCE_MM &&
-                strikeTimingReady &&
-                !puckAlreadyPastRobot(localPuckTable, normalTargetTable)) {
-                motionPhase_ = MotionPhase::Striking;
-                strikeBaseTable_ = normalTargetTable;
-                lastStruckTarget_ = normalTargetTable;
-                strikeStartTime_ = std::chrono::steady_clock::now();
-                float puckSpeed = static_cast<float>(cv::norm(localPuckVelocity));
-                if (puckSpeed >= MIN_STRIKE_DIRECTION_SPEED_MM_S) {
-                    strikeDirection_ = -localPuckVelocity / puckSpeed;
-                } else {
-                    strikeDirection_ = defaultStrikeDirection();
+                !puckAlreadyPastRobot(localPuckTable, normalTargetTable);
+
+            if (!readyToStrike) {
+                strikeArmed_ = false;
+            } else {
+                if (!strikeArmed_) {
+                    strikeArmed_ = true;
+                    strikeUseScheduledTiming_ = localPuckConfidence >= STRIKE_MIN_CONFIDENCE &&
+                        localPuckTimeToEntrySec >= 0.0f && localPuckPredictionTimestampUs > 0;
+                    if (strikeUseScheduledTiming_) {
+                        strikeArrivalUs_ = localPuckPredictionTimestampUs +
+                            static_cast<uint64_t>(localPuckTimeToEntrySec * 1e6f);
+                    }
+                }
+
+                bool strikeTimingReady = true;
+                if (strikeUseScheduledTiming_) {
+                    uint64_t nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count();
+                    uint64_t leadUs = static_cast<uint64_t>(STRIKE_LEAD_TIME_S * 1e6f);
+                    strikeTimingReady = (nowUs + leadUs) >= strikeArrivalUs_;
+                }
+
+                if (strikeTimingReady) {
+                    strikeArmed_ = false;
+                    motionPhase_ = MotionPhase::Striking;
+                    strikeBaseTable_ = normalTargetTable;
+                    lastStruckTarget_ = normalTargetTable;
+                    strikeStartTime_ = std::chrono::steady_clock::now();
+                    float puckSpeed = static_cast<float>(cv::norm(localPuckVelocity));
+                    if (puckSpeed >= MIN_STRIKE_DIRECTION_SPEED_MM_S) {
+                        strikeDirection_ = -localPuckVelocity / puckSpeed;
+                    } else {
+                        strikeDirection_ = defaultStrikeDirection();
+                    }
                 }
             }
         }

@@ -136,6 +136,9 @@ private:
     // on arrival, same as before.
     static constexpr float STRIKE_LEAD_TIME_S = 0.08f;
     static constexpr float STRIKE_MIN_CONFIDENCE = 0.5f;
+    bool strikeArmed_ = false;
+    bool strikeUseScheduledTiming_ = false;
+    uint64_t strikeArrivalUs_ = 0;
 
     Config config_;
     uint64_t egm_seqno;

@@ -12,7 +12,8 @@ public:
     void setState(const Eigen::VectorXd& state);
     void setF(const Eigen::MatrixXd& F);
     void reset();
-    Eigen::MatrixXd getCovariance() const; 
+    Eigen::MatrixXd getCovariance() const;
+    double getSigmaA() const { return sigma_a_; }
 
 private:
     double sigma_a_;

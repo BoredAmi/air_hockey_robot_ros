@@ -5,25 +5,21 @@
 #include <air_hockey_robot_msgs/msg/puck_detection.hpp>
 #include <opencv2/opencv.hpp>
 #include <opencv2/aruco.hpp>
+#include "table_marker_layout.hpp"
 
 #include <thread>
 #include <mutex>
 #include <condition_variable>
 #include <queue>
 #include <atomic>
+#include <map>
 
 namespace pc_node {
 
 struct DetectorConfig {
-    int TABLE_DETECT_THRESHOLD;
-    int PUCK_THRESHOLD;
-    double PUCK_MIN_AREA;
-    double PUCK_MAX_AREA;
     int PUCK_ARUCO_ID;
     double PHYSICAL_TABLE_WIDTH;   // mm
     double PHYSICAL_TABLE_HEIGHT;  // mm
-    int TABLE_WIDTH;               // px (fallback)
-    int TABLE_HEIGHT;              // px
     bool ENABLE_UNDISTORTION;
 };
 
@@ -40,13 +36,9 @@ private:
     rclcpp::Subscription<air_hockey_robot_msgs::msg::PuckState>::SharedPtr stream_sub_;
     rclcpp::Publisher<air_hockey_robot_msgs::msg::PuckDetection>::SharedPtr puck_pub_;
 
-    cv::RotatedRect detectTable(cv::Mat& image);
-    cv::Point2f detectPuck(const cv::Mat& grayImage);
-    cv::Point2f imageToTableCoordinates(cv::Point2f imagePoint, int imageWidth, int imageHeight);
+    bool loadTableMarkerLayout(const std::string& filename = "table_markers.yml");
 
     bool loadCalibration(const std::string& filename = "calibration.yml");
-    bool loadCachedPerspective(const std::string& filename = "table_perspective.yml");
-    bool saveCachedPerspective(const std::string& filename = "table_perspective.yml");
 
     DetectorConfig config_;
 
@@ -57,11 +49,15 @@ private:
     cv::Mat cameraMatrix_;
     cv::Mat distCoeffs_;
 
-    cv::Rect tableBoundingRect_;
-    cv::Size tableOutputSize_;
-    cv::Mat tablePerspectiveMatrix_;   
-    bool tableDetected_;
-    bool tablePerspectiveCached_;
+    std::map<int, cv::Point2f> tableMarkerLayout_;  // marker id -> table-frame mm position
+    cv::Mat tableHomography_;                       // undistorted-pixel -> table mm
+    bool haveTableHomography_ = false;
+    static constexpr float MAX_PLAUSIBLE_PUCK_SPEED_MM_S = 15000.0f;
+    cv::Point2f lastAcceptedPuckTable_{-1.0f, -1.0f};
+    uint64_t lastAcceptedTimestamp_ = 0;
+    cv::Point2f pendingCandidateTable_{-1.0f, -1.0f};
+    uint64_t pendingCandidateTimestamp_ = 0;
+    bool havePendingCandidate_ = false;
 
     std::thread processing_thread_;
     std::mutex queue_mutex_;

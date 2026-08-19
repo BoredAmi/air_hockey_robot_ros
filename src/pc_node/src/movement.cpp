@@ -80,7 +80,6 @@ bool MovementController::startEgmServer() {
 }
 
 bool MovementController::moveTo(cv::Point2f tablePosition, uint64_t detectionTimestampUs) {
-    std::cout << "Setting target table position to: (" << tablePosition.x << ", " << tablePosition.y << ")" << std::endl;
     std::lock_guard<std::mutex> lock(targetMutex_);
 
     targetTablePosition_ = tablePosition;
@@ -92,10 +91,15 @@ float MovementController::getDetectionToSendLatencyMs() const {
     return lastDetectionToSendLatencyMs_.load();
 }
 
-void MovementController::updatePuckPosition(cv::Point2f puckTablePosition, cv::Point2f puckVelocityTable) {
+void MovementController::updatePuckPosition(cv::Point2f puckTablePosition, cv::Point2f puckVelocityTable,
+                                              float confidence, float timeToEntrySec,
+                                              uint64_t predictionTimestampUs) {
     std::lock_guard<std::mutex> lock(targetMutex_);
     puckTablePosition_ = puckTablePosition;
     puckVelocityTable_ = puckVelocityTable;
+    puckConfidence_ = confidence;
+    puckTimeToEntrySec_ = timeToEntrySec;
+    puckPredictionTimestampUs_ = predictionTimestampUs;
 }
 
 bool MovementController::puckAlreadyPastRobot(cv::Point2f puckTable, cv::Point2f robotTargetTable) const {
@@ -119,20 +123,36 @@ cv::Point2f MovementController::defaultStrikeDirection() const {
     }
 }
 
+cv::Point2f MovementController::reachCircleCenter() const {
+    return cv::Point2f(-BASE_TO_EDGE_OFFSET_MM, config_.PHYSICAL_TABLE_HEIGHT / 2.0f);
+}
+
 float MovementController::attackEnvelopeMaxX(float y) const {
-    if (y <= REACH_ENVELOPE[0].y) return REACH_ENVELOPE[0].xMax;
-    if (y >= REACH_ENVELOPE[2].y) return REACH_ENVELOPE[2].xMax;
-    if (y <= REACH_ENVELOPE[1].y) {
-        float t = (y - REACH_ENVELOPE[0].y) / (REACH_ENVELOPE[1].y - REACH_ENVELOPE[0].y);
-        return REACH_ENVELOPE[0].xMax + t * (REACH_ENVELOPE[1].xMax - REACH_ENVELOPE[0].xMax);
+    cv::Point2f center = reachCircleCenter();
+    float dy = y - center.y;
+    float discriminant = REACH_RADIUS_MM * REACH_RADIUS_MM - dy * dy;
+    if (discriminant < 0.0f) return center.x;  // y is outside the reachable circle entirely
+    return center.x + std::sqrt(discriminant);
+}
+
+float MovementController::lateralBandSpanMm() const {
+    switch (config_.robot_origin_corner) {
+        case 0:
+        case 3:
+            return config_.PHYSICAL_TABLE_WIDTH;
+        case 1:
+        case 2:
+        default:
+            return config_.PHYSICAL_TABLE_HEIGHT;
     }
-    float t = (y - REACH_ENVELOPE[1].y) / (REACH_ENVELOPE[2].y - REACH_ENVELOPE[1].y);
-    return REACH_ENVELOPE[1].xMax + t * (REACH_ENVELOPE[2].xMax - REACH_ENVELOPE[1].xMax);
 }
 
 bool MovementController::puckWithinAttackEnvelope(cv::Point2f puckRobot) const {
-    if (puckRobot.y < REACH_ENVELOPE[0].y || puckRobot.y > REACH_ENVELOPE[2].y) return false;
-    return puckRobot.x >= ATTACK_MIN_X_MM && puckRobot.x <= attackEnvelopeMaxX(puckRobot.y);
+    cv::Point2f center = reachCircleCenter();
+    float dx = puckRobot.x - center.x;
+    float dy = puckRobot.y - center.y;
+    bool insideReach = (dx * dx + dy * dy) <= REACH_RADIUS_MM * REACH_RADIUS_MM;
+    return insideReach && puckRobot.x >= ATTACK_MIN_X_MM;
 }
 
 cv::Point2f MovementController::rateLimitTowards(cv::Point2f current, cv::Point2f desired, float maxSpeedMmS,
@@ -216,12 +236,18 @@ void MovementController::egmWorkerLoop() {
         uint64_t localDetectionTimestampUs = 0;
         cv::Point2f localPuckTable;
         cv::Point2f localPuckVelocity;
+        float localPuckConfidence;
+        float localPuckTimeToEntrySec;
+        uint64_t localPuckPredictionTimestampUs;
         {
             std::lock_guard<std::mutex> lock(targetMutex_);
             localTarget = targetTablePosition_;
             localDetectionTimestampUs = targetDetectionTimestampUs_;
             localPuckTable = puckTablePosition_;
             localPuckVelocity = puckVelocityTable_;
+            localPuckConfidence = puckConfidence_;
+            localPuckTimeToEntrySec = puckTimeToEntrySec_;
+            localPuckPredictionTimestampUs = puckPredictionTimestampUs_;
         }
 
         bool haveTarget = (localTarget.x >= 0 && localTarget.y >= 0);
@@ -260,7 +286,7 @@ void MovementController::egmWorkerLoop() {
         bool puckStalledLongEnough = puckStalled_ &&
             (std::chrono::steady_clock::now() - puckStallStartTime_) >= PUCK_STALL_DURATION;
 
-        if (motionPhase_ != MotionPhase::Attacking && puckStalledLongEnough) {
+        if (ATTACKING_ENABLED && motionPhase_ != MotionPhase::Attacking && puckStalledLongEnough) {
             motionPhase_ = MotionPhase::Attacking;
             attackStage_ = AttackStage::Retract;
             attackPuckTable_ = localPuckTable;
@@ -278,9 +304,21 @@ void MovementController::egmWorkerLoop() {
                 motionPhase_ = MotionPhase::Tracking;
             }
 
-            if (motionPhase_ == MotionPhase::Tracking && haveTarget &&
+            bool strikeTimingReady = true;
+            if (localPuckConfidence >= STRIKE_MIN_CONFIDENCE && localPuckTimeToEntrySec >= 0.0f &&
+                localPuckPredictionTimestampUs > 0) {
+                uint64_t nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+                uint64_t arrivalUs = localPuckPredictionTimestampUs +
+                    static_cast<uint64_t>(localPuckTimeToEntrySec * 1e6f);
+                uint64_t leadUs = static_cast<uint64_t>(STRIKE_LEAD_TIME_S * 1e6f);
+                strikeTimingReady = (nowUs + leadUs) >= arrivalUs;
+            }
+
+            if (STRIKING_ENABLED && motionPhase_ == MotionPhase::Tracking && haveTarget &&
                 cv::norm(actualRobotNow - normalTargetRobot) <= ARRIVAL_TOLERANCE_MM &&
                 cv::norm(normalTargetTable - lastStruckTarget_) > STRIKE_REARM_DISTANCE_MM &&
+                strikeTimingReady &&
                 !puckAlreadyPastRobot(localPuckTable, normalTargetTable)) {
                 motionPhase_ = MotionPhase::Striking;
                 strikeBaseTable_ = normalTargetTable;
@@ -359,8 +397,12 @@ void MovementController::egmWorkerLoop() {
             targetRobot = TableToRobotCoordinates(targetTable);
         }
 
-        std::cout << "EGM MOVE: table=(" << targetTable.x << ", " << targetTable.y
-                   << ") robot=(" << targetRobot.x << ", " << targetRobot.y << ")" << std::endl;
+        auto nowSteady = std::chrono::steady_clock::now();
+        if (nowSteady - lastEgmLogTime_ >= EGM_LOG_INTERVAL) {
+            lastEgmLogTime_ = nowSteady;
+            std::cout << "EGM MOVE: table=(" << targetTable.x << ", " << targetTable.y
+                       << ") robot=(" << targetRobot.x << ", " << targetRobot.y << ")" << std::endl;
+        }
 
         abb::egm::EgmSensor sensorPacket;
         auto* header = sensorPacket.mutable_header();
@@ -372,13 +414,15 @@ void MovementController::egmWorkerLoop() {
         auto* cartesian = planned->mutable_cartesian();
 
         auto* pos = cartesian->mutable_pos();
-        // Clamp to the measured reach envelope rather than the old fixed
-        // DEFENSE_ZONE_WIDTH+100 cap, which was far short of the arm's real
-        // forward reach and would have choked attack targets down to ~194mm.
         float xFloor = (motionPhase_ == MotionPhase::Attacking && attackStage_ == AttackStage::Retract)
-            ? ATTACK_RETRACT_X_MM : 80.0f;
-        if (targetRobot.y < REACH_ENVELOPE[0].y) targetRobot.y = REACH_ENVELOPE[0].y;
-        if (targetRobot.y > REACH_ENVELOPE[2].y) targetRobot.y = REACH_ENVELOPE[2].y;
+            ? ATTACK_RETRACT_X_MM : MIN_FORWARD_REACH_MM;
+        float yMin = reachCircleCenter().y - REACH_RADIUS_MM;
+        float yMax = reachCircleCenter().y + REACH_RADIUS_MM;
+        float bandClearance = config_.PADDLE_RADIUS_MM + PADDLE_BAND_MARGIN_MM;
+        yMin = std::max(yMin, bandClearance);
+        yMax = std::min(yMax, lateralBandSpanMm() - bandClearance);
+        if (targetRobot.y < yMin) targetRobot.y = yMin;
+        if (targetRobot.y > yMax) targetRobot.y = yMax;
         if (targetRobot.x < xFloor) targetRobot.x = xFloor;
         float xCeil = attackEnvelopeMaxX(targetRobot.y);
         if (targetRobot.x > xCeil) targetRobot.x = xCeil;
@@ -448,7 +492,11 @@ cv::Point2f MovementController::RobotToTableCoordinates(cv::Point2f robotPositio
 }
 
 cv::Point2f MovementController::idleTablePosition() const {
+    // Targets the band itself (not a hand-picked standoff distance) - moveTo()'s
+    // MIN_FORWARD_REACH_MM clamp pulls this back to the closest position it's
+    // actually safe to sit at, minimizing travel distance for the fastest saves
+    // since real entry points are always near the band anyway.
     return cv::Point2f(
-        config_.PHYSICAL_TABLE_WIDTH - config_.DEFENSE_ZONE_WIDTH,
+        config_.PHYSICAL_TABLE_WIDTH,
         config_.PHYSICAL_TABLE_HEIGHT / 2.0f);
 }

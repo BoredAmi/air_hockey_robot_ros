@@ -1,5 +1,6 @@
 #include "movement_node.hpp"
 #include <cmath>
+#include <chrono>
 
 namespace pc_node {
 
@@ -123,7 +124,10 @@ bool MovementNode::computePuckBehindZoneEntrance(int8_t zoneIndex, float puckX, 
 void MovementNode::entry_callback(const air_hockey_robot_msgs::msg::PredictedEntry::SharedPtr msg) {
     cv::Point2f targetTablePos(-1.0f, -1.0f);
 
-    mover_.updatePuckPosition(cv::Point2f(msg->puck_x, msg->puck_y), cv::Point2f(msg->vx, msg->vy));
+    uint64_t pcReceiveTimeUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    mover_.updatePuckPosition(cv::Point2f(msg->puck_x, msg->puck_y), cv::Point2f(msg->vx, msg->vy),
+                               msg->confidence, msg->time_to_entry, pcReceiveTimeUs);
 
     bool puckBehindZone = computePuckBehindZoneEntrance(msg->defense_zone_index, msg->puck_x, msg->puck_y);
     bool puckTooCloseToZone = computePuckTooCloseToZone(
@@ -162,8 +166,12 @@ void MovementNode::entry_callback(const air_hockey_robot_msgs::msg::PredictedEnt
             targetTablePos = cv::Point2f(-1.0f, -1.0f);
         }
         */
-       targetTablePos = cv::Point2f(msg->x, msg->y);
-       lastValidDefensePos_ = targetTablePos;
+       cv::Point2f newTarget(msg->x, msg->y);
+       bool haveExistingTarget = trackTarget_ && lastValidDefensePos_.x >= 0.0f;
+       if (!haveExistingTarget || cv::norm(newTarget - lastValidDefensePos_) > TARGET_DEADBAND_MM) {
+           lastValidDefensePos_ = newTarget;
+       }
+       targetTablePos = lastValidDefensePos_;
        trackTarget_ = true;
        lastMoveTimeUs_ = msg->timestamp;
     } else {

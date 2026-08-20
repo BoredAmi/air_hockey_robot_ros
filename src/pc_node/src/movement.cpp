@@ -286,29 +286,6 @@ void MovementController::egmWorkerLoop() {
         bool puckStalledLongEnough = puckStalled_ &&
             (std::chrono::steady_clock::now() - puckStallStartTime_) >= PUCK_STALL_DURATION;
 
-        if (motionPhase_ != MotionPhase::Attacking) {
-            auto nowSteadyDbg = std::chrono::steady_clock::now();
-            if (nowSteadyDbg - lastAttackDebugLogTime_ >= EGM_LOG_INTERVAL) {
-                lastAttackDebugLogTime_ = nowSteadyDbg;
-                cv::Point2f center = reachCircleCenter();
-                float distFromCenter = puckValid ? static_cast<float>(cv::norm(puckRobotNow - center)) : -1.0f;
-                float puckSpeedDbg = static_cast<float>(cv::norm(localPuckVelocity));
-                float stallElapsedS = puckStalled_
-                    ? std::chrono::duration<float>(std::chrono::steady_clock::now() - puckStallStartTime_).count()
-                    : 0.0f;
-                std::cout << "ATTACK DEBUG: enabled=" << ATTACKING_ENABLED
-                           << " puckValid=" << puckValid
-                           << " puckRobot=(" << puckRobotNow.x << "," << puckRobotNow.y << ")"
-                           << " distFromReachCenter=" << distFromCenter << "/" << REACH_RADIUS_MM
-                           << " x>=" << ATTACK_MIN_X_MM << "?" << (puckRobotNow.x >= ATTACK_MIN_X_MM)
-                           << " inEnvelope=" << puckInAttackZone
-                           << " speed=" << puckSpeedDbg << "/" << PUCK_STALL_SPEED_MM_S
-                           << " stalled=" << puckStalled_
-                           << " stalledFor=" << stallElapsedS << "/" << (PUCK_STALL_DURATION.count() / 1000.0f) << "s"
-                           << std::endl;
-            }
-        }
-
         if (ATTACKING_ENABLED && motionPhase_ != MotionPhase::Attacking && puckStalledLongEnough) {
             motionPhase_ = MotionPhase::Attacking;
             attackStage_ = AttackStage::Retract;
@@ -372,9 +349,6 @@ void MovementController::egmWorkerLoop() {
         cv::Point2f targetTable;
         cv::Point2f targetRobot;
         if (motionPhase_ == MotionPhase::Attacking) {
-            if (attackStage_ == AttackStage::Retract && puckValid) {
-                attackPuckTable_ = localPuckTable + localPuckVelocity * ATTACK_PREDICT_LEAD_S;
-            }
             cv::Point2f puckRobot = TableToRobotCoordinates(attackPuckTable_);
 
             cv::Point2f pushTarget(std::min(puckRobot.x + ATTACK_PUSH_OVERSHOOT_MM, attackEnvelopeMaxX(puckRobot.y)),
@@ -412,10 +386,11 @@ void MovementController::egmWorkerLoop() {
                     attackRateLimitTime_ = attackStageStartTime_;
                 }
             } else {
-                attackRateLimitedRobot_ = rateLimitTowards(attackRateLimitedRobot_, normalTargetRobot,
+
+                attackRateLimitedRobot_ = rateLimitTowards(attackRateLimitedRobot_, retreatTarget,
                                                             ATTACK_RETREAT_SPEED_MM_S, attackRateLimitTime_);
                 targetRobot = attackRateLimitedRobot_;
-                bool arrivedAtRetreat = cv::norm(actualRobotNow - normalTargetRobot) <= ARRIVAL_TOLERANCE_MM;
+                bool arrivedAtRetreat = cv::norm(actualRobotNow - retreatTarget) <= ARRIVAL_TOLERANCE_MM;
                 bool retreatTimedOut =
                     std::chrono::steady_clock::now() - attackStageStartTime_ >= ATTACK_RETREAT_TIMEOUT;
                 if (arrivedAtRetreat || retreatTimedOut) {

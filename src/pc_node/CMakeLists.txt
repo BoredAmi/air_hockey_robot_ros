@@ -114,4 +114,12 @@ ament_target_dependencies(kalman_monitor rclcpp air_hockey_robot_msgs)
 target_link_libraries(kalman_monitor ${OpenCV_LIBRARIES})
 install(TARGETS kalman_monitor DESTINATION lib/${PROJECT_NAME})
 
+# ==========================================
+# 6. Presentation-quality live view (demos/recording, not diagnostics)
+# ==========================================
+add_executable(show_view app/show_view_main.cpp)
+ament_target_dependencies(show_view rclcpp air_hockey_robot_msgs)
+target_link_libraries(show_view ${OpenCV_LIBRARIES})
+install(TARGETS show_view DESTINATION lib/${PROJECT_NAME})
+
 ament_package()

@@ -71,25 +71,28 @@ private:
     cv::Point2f defaultStrikeDirection() const;
     static constexpr float MIN_STRIKE_DIRECTION_SPEED_MM_S = 20.0f;
 
-
-    static constexpr float BASE_TO_EDGE_OFFSET_MM = 250.0f;
-    static constexpr float REACH_RADIUS_MM = 500.0f;
+    static constexpr float BASE_TO_EDGE_OFFSET_MM = 330.0f;
+    static constexpr float REACH_RADIUS_MM = 530.0f;
     cv::Point2f reachCircleCenter() const;
     float attackEnvelopeMaxX(float y) const;
     bool puckWithinAttackEnvelope(cv::Point2f puckRobot) const;
-    static constexpr float MIN_FORWARD_REACH_MM = 50.0f;
+    static constexpr float MIN_FORWARD_REACH_MM = 80.0f;
 
     float lateralBandSpanMm() const;
     static constexpr float PADDLE_BAND_MARGIN_MM = 12.0f;
+    // Pucks this close to the near edge (robot base) are ignored for attack -
+    // not enough room to retract for a windup before pushing through them.
     static constexpr float ATTACK_MIN_X_MM = 80.0f;
 
-
-    static constexpr float PUCK_STALL_SPEED_MM_S = 300.0f;
-    static constexpr std::chrono::milliseconds PUCK_STALL_DURATION{200};
+    // Attack only engages a puck that has been sitting nearly still (not one
+    // we're chasing mid-flight) - a fast puck is handled by the normal
+    // predicted-entry Tracking/Striking path instead.
+    static constexpr float PUCK_STALL_SPEED_MM_S = 20.0f;
+    static constexpr std::chrono::milliseconds PUCK_STALL_DURATION{1000};
     bool puckStalled_ = false;
     std::chrono::steady_clock::time_point puckStallStartTime_;
 
-    static constexpr bool ATTACKING_ENABLED = false;
+    static constexpr bool ATTACKING_ENABLED = true;
     static constexpr bool STRIKING_ENABLED = true;
 
     enum class AttackStage { Retract, Push, Hold, Retreat };
@@ -97,15 +100,15 @@ private:
     cv::Point2f attackPuckTable_{-1.0f, -1.0f};
     std::chrono::steady_clock::time_point attackStageStartTime_;
     static constexpr float ATTACK_RETRACT_X_MM = 40.0f;
-    static constexpr float ATTACK_PUSH_OVERSHOOT_MM = 80.0f;
-    static constexpr float ATTACK_PREDICT_LEAD_S = 0.15f;
+    static constexpr float ATTACK_PUSH_OVERSHOOT_MM = 40.0f;
 
     static constexpr std::chrono::milliseconds ATTACK_PUSH_TIMEOUT{20000};
     static constexpr std::chrono::milliseconds ATTACK_HOLD_DURATION{2000};
-    static constexpr std::chrono::milliseconds ATTACK_RETREAT_TIMEOUT{5000};
-    static constexpr float ATTACK_RETRACT_SPEED_MM_S = 200.0f;
-    static constexpr float ATTACK_PUSH_SPEED_MM_S = 1200.0f;
-    static constexpr float ATTACK_RETREAT_SPEED_MM_S = 100.0f;
+    static constexpr std::chrono::milliseconds ATTACK_RETREAT_TIMEOUT{2000};
+
+    static constexpr float ATTACK_RETRACT_SPEED_MM_S = 400.0f;
+    static constexpr float ATTACK_PUSH_SPEED_MM_S = 800.0f;
+    static constexpr float ATTACK_RETREAT_SPEED_MM_S = 200.0f;
     cv::Point2f attackRateLimitedRobot_{0.0f, 0.0f};
     std::chrono::steady_clock::time_point attackRateLimitTime_;
     cv::Point2f rateLimitTowards(cv::Point2f current, cv::Point2f desired, float maxSpeedMmS,
@@ -155,7 +158,6 @@ private:
     #endif
     std::chrono::steady_clock::time_point lastEgmLogTime_{};
     static constexpr std::chrono::milliseconds EGM_LOG_INTERVAL{500};
-    std::chrono::steady_clock::time_point lastAttackDebugLogTime_{};
 
     std::thread egmThread_;
     std::atomic<bool> isRunning_{false};

@@ -1,0 +1,186 @@
+<?xml version="1.0"?>
+<sdf version="1.8">
+  <model name="air_hockey_table">
+    <static>true</static>
+
+    <link name="table_link">
+
+      <!-- Play surface (1980x1065mm inner rectangle, 155mm corner fillets, 10mm thick). -->
+      <collision name="countertop_collision">
+        <geometry>
+          <mesh><uri>meshes/countertop.obj</uri></mesh>
+        </geometry>
+        <surface>
+          <friction>
+            <ode><mu>0.01</mu><mu2>0.01</mu2></ode>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0.0</restitution_coefficient>
+            <threshold>0.01</threshold>
+          </bounce>
+        </surface>
+      </collision>
+      <visual name="countertop_visual">
+        <geometry>
+          <mesh><uri>meshes/countertop.obj</uri></mesh>
+        </geometry>
+        <material>
+          <ambient>0.9 0.9 0.92 1</ambient>
+          <diffuse>0.9 0.9 0.92 1</diffuse>
+          <specular>0.3 0.3 0.3 1</specular>
+        </material>
+      </visual>
+
+      <!-- Cushion ring (banda), offset outward from the play-area edge. Visual only - see the
+           primitive collision shapes below for why. -->
+      <visual name="band_visual">
+        <geometry>
+          <mesh><uri>meshes/band.obj</uri></mesh>
+        </geometry>
+        <material>
+          <ambient>0.05 0.05 0.05 1</ambient>
+          <diffuse>0.05 0.05 0.05 1</diffuse>
+          <specular>0.1 0.1 0.1 1</specular>
+        </material>
+      </visual>
+
+      <!--
+        Cushion COLLISION as 4 straight box walls + 4 chamfered-corner boxes
+        (an octagon approximating the 155mm corner fillets), instead of
+        band.obj's mesh - dartsim (ignition-physics5) doesn't honor
+        <bounce><restitution_coefficient> when either side of a contact is
+        a mesh (confirmed: a mesh puck sat dead against both a mesh wall
+        and a primitive box wall with zero rebound; a primitive puck vs a
+        primitive box wall bounced correctly with a proper decaying
+        oscillation). Primitive-vs-concave-mesh also failed the other way
+        round: a cylinder puck against band.obj's mesh passed straight
+        through with no collision response at all. Primitive-vs-primitive
+        was the only combination that gave both correct containment and
+        correct restitution in testing, hence this shape approximation
+        here and the puck's cylinder collision in puck/model.sdf. Geometry
+        computed from the play area (1980x1065mm, 155mm corner radius) -
+        see scratchpad notes if these ever need regenerating for a
+        different table size.
+      -->
+      <collision name="wall_top_collision">
+        <pose>-0.99 0.0375 0.0375 0 0 0</pose>
+        <geometry><box><size>1.67 0.075 0.055</size></box></geometry>
+        <surface>
+          <friction><ode><mu>0.01</mu><mu2>0.01</mu2></ode></friction>
+          <bounce><restitution_coefficient>0.8</restitution_coefficient><threshold>0.01</threshold></bounce>
+        </surface>
+      </collision>
+      <collision name="wall_bottom_collision">
+        <pose>-0.99 -1.1025 0.0375 0 0 0</pose>
+        <geometry><box><size>1.67 0.075 0.055</size></box></geometry>
+        <surface>
+          <friction><ode><mu>0.01</mu><mu2>0.01</mu2></ode></friction>
+          <bounce><restitution_coefficient>0.8</restitution_coefficient><threshold>0.01</threshold></bounce>
+        </surface>
+      </collision>
+      <collision name="wall_left_collision">
+        <pose>-2.0175 -0.5325 0.0375 0 0 0</pose>
+        <geometry><box><size>0.075 0.755 0.055</size></box></geometry>
+        <surface>
+          <friction><ode><mu>0.01</mu><mu2>0.01</mu2></ode></friction>
+          <bounce><restitution_coefficient>0.8</restitution_coefficient><threshold>0.01</threshold></bounce>
+        </surface>
+      </collision>
+      <collision name="wall_right_collision">
+        <pose>0.0375 -0.5325 0.0375 0 0 0</pose>
+        <geometry><box><size>0.075 0.755 0.055</size></box></geometry>
+        <surface>
+          <friction><ode><mu>0.01</mu><mu2>0.01</mu2></ode></friction>
+          <bounce><restitution_coefficient>0.8</restitution_coefficient><threshold>0.01</threshold></bounce>
+        </surface>
+      </collision>
+      <collision name="corner_00_collision">
+        <pose>-0.0775 -0.0775 0.0375 0 0 -0.7854</pose>
+        <geometry><box><size>0.2192 0.075 0.055</size></box></geometry>
+        <surface>
+          <friction><ode><mu>0.01</mu><mu2>0.01</mu2></ode></friction>
+          <bounce><restitution_coefficient>0.8</restitution_coefficient><threshold>0.01</threshold></bounce>
+        </surface>
+      </collision>
+      <collision name="corner_w0_collision">
+        <pose>-1.9025 -0.0775 0.0375 0 0 -2.3562</pose>
+        <geometry><box><size>0.2192 0.075 0.055</size></box></geometry>
+        <surface>
+          <friction><ode><mu>0.01</mu><mu2>0.01</mu2></ode></friction>
+          <bounce><restitution_coefficient>0.8</restitution_coefficient><threshold>0.01</threshold></bounce>
+        </surface>
+      </collision>
+      <collision name="corner_0h_collision">
+        <pose>-0.0775 -0.9875 0.0375 0 0 0.7854</pose>
+        <geometry><box><size>0.2192 0.075 0.055</size></box></geometry>
+        <surface>
+          <friction><ode><mu>0.01</mu><mu2>0.01</mu2></ode></friction>
+          <bounce><restitution_coefficient>0.8</restitution_coefficient><threshold>0.01</threshold></bounce>
+        </surface>
+      </collision>
+      <collision name="corner_wh_collision">
+        <pose>-1.9025 -0.9875 0.0375 0 0 2.3562</pose>
+        <geometry><box><size>0.2192 0.075 0.055</size></box></geometry>
+        <surface>
+          <friction><ode><mu>0.01</mu><mu2>0.01</mu2></ode></friction>
+          <bounce><restitution_coefficient>0.8</restitution_coefficient><threshold>0.01</threshold></bounce>
+        </surface>
+      </collision>
+
+      <!--
+        AprilTag 16h5 markers, 75x75mm printed tile (65mm tag + 5mm margin).
+        Positions converted from table_markers.yml's table-frame mm (origin
+        at the play-area corner the perception code homography is anchored
+        to) into this model's CAD frame: cad_x = (table_frame_x - 1980) /
+        1000, cad_y = (table_frame_y - 1065) / 1000. Visual-only decals; no
+        physical bezel geometry exists yet, so instead of floating them at
+        the old table-surface height (z=0.01) - which, now that band.obj's
+        cushion wall rises from there up to z=0.065 at every one of these
+        XY locations, would bury them inside it - they sit at z=0.067, just
+        above the cushion's tallest point. Revisit once real bezel geometry
+        exists so they can sit flush on it instead.
+      -->
+      <visual name="marker_15">
+        <pose>-1.7875 -1.1025 0.067 0 0 0</pose>
+        <geometry><mesh><uri>meshes/marker_tile_15.obj</uri></mesh></geometry>
+        <material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><specular>1 1 1 1</specular><pbr><metal><albedo_map>materials/textures/april_16h5-15-1.png</albedo_map><roughness>1.0</roughness><metalness>0.0</metalness></metal></pbr></material>
+      </visual>
+      <visual name="marker_14">
+        <pose>-0.1925 -1.1025 0.067 0 0 0</pose>
+        <geometry><mesh><uri>meshes/marker_tile_14.obj</uri></mesh></geometry>
+        <material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><specular>1 1 1 1</specular><pbr><metal><albedo_map>materials/textures/april_16h5-14-1.png</albedo_map><roughness>1.0</roughness><metalness>0.0</metalness></metal></pbr></material>
+      </visual>
+      <visual name="marker_13">
+        <pose>0.0375 -0.8725 0.067 0 0 0</pose>
+        <geometry><mesh><uri>meshes/marker_tile_13.obj</uri></mesh></geometry>
+        <material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><specular>1 1 1 1</specular><pbr><metal><albedo_map>materials/textures/april_16h5-13-1.png</albedo_map><roughness>1.0</roughness><metalness>0.0</metalness></metal></pbr></material>
+      </visual>
+      <visual name="marker_12">
+        <pose>0.0375 -0.1925 0.067 0 0 0</pose>
+        <geometry><mesh><uri>meshes/marker_tile_12.obj</uri></mesh></geometry>
+        <material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><specular>1 1 1 1</specular><pbr><metal><albedo_map>materials/textures/april_16h5-12-1.png</albedo_map><roughness>1.0</roughness><metalness>0.0</metalness></metal></pbr></material>
+      </visual>
+      <visual name="marker_11">
+        <pose>-0.1925 0.0375 0.067 0 0 0</pose>
+        <geometry><mesh><uri>meshes/marker_tile_11.obj</uri></mesh></geometry>
+        <material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><specular>1 1 1 1</specular><pbr><metal><albedo_map>materials/textures/april_16h5-11-1.png</albedo_map><roughness>1.0</roughness><metalness>0.0</metalness></metal></pbr></material>
+      </visual>
+      <visual name="marker_10">
+        <pose>-1.7875 0.0375 0.067 0 0 0</pose>
+        <geometry><mesh><uri>meshes/marker_tile_10.obj</uri></mesh></geometry>
+        <material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><specular>1 1 1 1</specular><pbr><metal><albedo_map>materials/textures/april_16h5-10-1.png</albedo_map><roughness>1.0</roughness><metalness>0.0</metalness></metal></pbr></material>
+      </visual>
+      <visual name="marker_16">
+        <pose>-2.0175 -0.1925 0.067 0 0 0</pose>
+        <geometry><mesh><uri>meshes/marker_tile_16.obj</uri></mesh></geometry>
+        <material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><specular>1 1 1 1</specular><pbr><metal><albedo_map>materials/textures/april_16h5-16-1.png</albedo_map><roughness>1.0</roughness><metalness>0.0</metalness></metal></pbr></material>
+      </visual>
+      <visual name="marker_17">
+        <pose>-2.0175 -0.8725 0.067 0 0 0</pose>
+        <geometry><mesh><uri>meshes/marker_tile_17.obj</uri></mesh></geometry>
+        <material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><specular>1 1 1 1</specular><pbr><metal><albedo_map>materials/textures/april_16h5-17-1.png</albedo_map><roughness>1.0</roughness><metalness>0.0</metalness></metal></pbr></material>
+      </visual>
+
+    </link>
+  </model>
+</sdf>

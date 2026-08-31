@@ -1,0 +1,53 @@
+<?xml version="1.0"?>
+<sdf version="1.8">
+  <model name="paddle">
+    <link name="paddle_link">
+
+      <inertial>
+        <mass>0.3</mass>
+        <inertia>
+          <ixx>0.00027</ixx>
+          <iyy>0.00027</iyy>
+          <izz>0.00036</izz>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyz>0</iyz>
+        </inertia>
+      </inertial>
+
+      <!--
+        Primitive cylinder, not a mesh: matches puck/air_hockey_table's
+        finding that dartsim (ignition-physics5) only gives reliable
+        collision + restitution for primitive-vs-primitive contact pairs
+        (see air_hockey_table/model.sdf's cushion notes). Radius matches
+        PADDLE_RADIUS_MM from pc_node/include/config.hpp (49mm).
+      -->
+      <collision name="paddle_collision">
+        <geometry>
+          <cylinder><radius>0.049</radius><length>0.06</length></cylinder>
+        </geometry>
+        <surface>
+          <friction>
+            <ode><mu>0.01</mu><mu2>0.01</mu2></ode>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0.6</restitution_coefficient>
+            <threshold>0.01</threshold>
+          </bounce>
+        </surface>
+      </collision>
+
+      <visual name="paddle_visual">
+        <geometry>
+          <cylinder><radius>0.049</radius><length>0.06</length></cylinder>
+        </geometry>
+        <material>
+          <ambient>0.1 0.3 0.8 1</ambient>
+          <diffuse>0.1 0.3 0.8 1</diffuse>
+          <specular>0.4 0.4 0.4 1</specular>
+        </material>
+      </visual>
+
+    </link>
+  </model>
+</sdf>

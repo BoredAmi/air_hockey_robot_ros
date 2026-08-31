@@ -1,0 +1,105 @@
+<?xml version="1.0"?>
+<sdf version="1.8">
+  <world name="air_hockey_world">
+
+    <physics name="1ms" type="dartsim">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <!--
+      Declared explicitly rather than relying on gz-sim's implicit default
+      system list: on this machine that default list turned out to be just
+      Physics/SceneBroadcaster/UserCommands (no Sensors), which is fragile -
+      once a <plugin> is added, gz-sim stops auto-loading defaults
+      entirely, so every system in actual use has to be listed here.
+      ApplyLinkWrench backs scripts/launch_puck.sh, letting you shove the
+      puck across the table to test the cushion bounce.
+    -->
+    <plugin filename="ignition-gazebo-physics-system" name="gz::sim::systems::Physics"></plugin>
+    <plugin filename="ignition-gazebo-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"></plugin>
+    <plugin filename="ignition-gazebo-user-commands-system" name="gz::sim::systems::UserCommands"></plugin>
+    <plugin filename="ignition-gazebo-apply-link-wrench-system" name="gz::sim::systems::ApplyLinkWrench"></plugin>
+
+    <!--
+      Shadows off: they're one of the more expensive parts of rendering
+      this scene for no real payoff on a flat table. A renderer that
+      can't keep up with a fast-moving puck drops frames, which looks
+      like the puck "teleporting" between positions even though the
+      underlying physics (checked directly via logged pose data, not
+      the rendered view) moves it continuously - cutting render cost
+      here buys headroom before that becomes visible.
+    -->
+    <scene>
+      <shadows>false</shadows>
+    </scene>
+
+    <light name="sun" type="directional">
+      <cast_shadows>false</cast_shadows>
+      <pose>-0.99 -0.5325 3 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.3 0.1 -0.9</direction>
+    </light>
+
+    <!-- Safety-net floor well below the table, in case the puck ever escapes the cushion. -->
+    <model name="ground_plane">
+      <static>true</static>
+      <pose>-0.99 -0.5325 -1 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
+          <material>
+            <ambient>0.3 0.3 0.3 1</ambient>
+            <diffuse>0.3 0.3 0.3 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <include>
+      <uri>model://air_hockey_table</uri>
+      <name>air_hockey_table</name>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
+
+    <!-- Table center, resting on the play surface (z=0.01) with a small drop gap. -->
+    <include>
+      <uri>model://puck</uri>
+      <name>puck</name>
+      <pose>-0.99 -0.5325 0.017 0 0 0</pose>
+    </include>
+
+    <!--
+      Robot end-effector placeholder, kinematically driven by
+      scripts/egm_robot_sim.py over the same EGM protocol the real ABB
+      robot controller uses (see that script's notes). Spawned a bit
+      inset from the right-hand cushion (its real EGM-commanded idle
+      position sits almost flush against it, matching
+      WHERE_DEFENSE_ZONE=3 in pc_node/include/config.hpp) so it doesn't
+      start deeply overlapping the cushion collision box before the sim
+      takes over moving it.
+    -->
+    <include>
+      <uri>model://paddle</uri>
+      <name>paddle</name>
+      <pose>-0.05 -0.5325 0.04 0 0 0</pose>
+    </include>
+
+    <gui fullscreen="0">
+      <camera name="user_camera">
+        <pose>-0.99 -0.5325 3.2 0 1.5708 1.5708</pose>
+      </camera>
+    </gui>
+
+  </world>
+</sdf>

@@ -14,8 +14,8 @@ public:
     bool ENABLE_UNDISTORTION = false;  // Enable real-time lens distortion correction
 
     // Physical table dimensions (mm)
-    float PHYSICAL_TABLE_WIDTH = 1155.0f;  // 1 meter
-    float PHYSICAL_TABLE_HEIGHT = 692.0f;  // 0.5 meters
+    float PHYSICAL_TABLE_WIDTH = 1980.0f;  // 1 meter
+    float PHYSICAL_TABLE_HEIGHT = 1065.0f;  // 0.5 meters
     float DEFENSE_ZONE_HEIGHT = 100.0f;    // height of defense zone
     float DEFENSE_ZONE_WIDTH = 200.0f; // width of defense zone
     float TABLE_CORNER_RADIUS_MM = 155.0f; // inner rounded-corner radius of the play area
@@ -69,8 +69,8 @@ public:
         USE_LIBCAMERA_BOOL = false;
 
         // Physical table dimensions (mm)
-        PHYSICAL_TABLE_WIDTH = 505.0f;
-        PHYSICAL_TABLE_HEIGHT = 520.0f;
+        PHYSICAL_TABLE_WIDTH = 1980.0f;
+        PHYSICAL_TABLE_HEIGHT = 1065.0f;
         DEFENSE_ZONE_HEIGHT = 100.0f;
         DEFENSE_ZONE_WIDTH = 200.0f;
         TABLE_CORNER_RADIUS_MM = 155.0f;
@@ -117,8 +117,8 @@ private:
     friend void from_json(const nlohmann::json& j, Config& c) {
         c.CAMERA_INDEX = j.value("CAMERA_INDEX", 0);
         c.USE_LIBCAMERA_BOOL = j.value("USE_LIBCAMERA_BOOL", true);
-        c.PHYSICAL_TABLE_WIDTH = j.value("PHYSICAL_TABLE_WIDTH", 505.0f);
-        c.PHYSICAL_TABLE_HEIGHT = j.value("PHYSICAL_TABLE_HEIGHT", 520.0f);
+        c.PHYSICAL_TABLE_WIDTH = j.value("PHYSICAL_TABLE_WIDTH", 1980.0f);
+        c.PHYSICAL_TABLE_HEIGHT = j.value("PHYSICAL_TABLE_HEIGHT", 1065.0f);
         c.DEFENSE_ZONE_HEIGHT = j.value("DEFENSE_ZONE_HEIGHT", 100.0f);
         c.DEFENSE_ZONE_WIDTH = j.value("DEFENSE_ZONE_WIDTH", 200.0f);
         c.TABLE_CORNER_RADIUS_MM = j.value("TABLE_CORNER_RADIUS_MM", 155.0f);

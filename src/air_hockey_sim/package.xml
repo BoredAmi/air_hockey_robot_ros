@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>air_hockey_sim</name>
+  <version>0.0.0</version>
+  <description>Gazebo (ros_gz) simulation of the physical air hockey table: countertop, cushion band, AprilTag markers, and puck with measured CAD mass/inertia and near-frictionless surface physics.</description>
+  <maintainer email="azmozgame@gmail.com">ami</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>ros_gz_sim</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

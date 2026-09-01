@@ -55,6 +55,39 @@
         </material>
       </visual>
 
+      <!--
+        AprilTag 16h5 ID 5 decal (matches PUCK_ARUCO_ID in config.json and
+        perception_node's single detection dictionary - see
+        materials/textures/april_16h5-5-1.png's generation notes), same
+        75mm-tile convention as the band markers but sized 55x55mm total
+        (45mm marker + 5mm margin per side) to fit the puck's ~78mm
+        diameter with clearance. A flat plane on the puck's top face
+        (puck.obj's origin sits at that top face, z=0 - see puck_visual's
+        note above), offset a hair above it to avoid z-fighting with the
+        puck's own top surface.
+      -->
+      <visual name="puck_marker_visual">
+        <pose>0 0 0.0002 0 0 0</pose>
+        <geometry>
+          <plane>
+            <normal>0 0 1</normal>
+            <size>0.055 0.055</size>
+          </plane>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+          <specular>1 1 1 1</specular>
+          <pbr>
+            <metal>
+              <albedo_map>materials/textures/april_16h5-5-1.png</albedo_map>
+              <roughness>1.0</roughness>
+              <metalness>0.0</metalness>
+            </metal>
+          </pbr>
+        </material>
+      </visual>
+
     </link>
   </model>
 </sdf>

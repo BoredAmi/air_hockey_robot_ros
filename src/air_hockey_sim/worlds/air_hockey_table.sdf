@@ -20,6 +20,11 @@
     <plugin filename="ignition-gazebo-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"></plugin>
     <plugin filename="ignition-gazebo-user-commands-system" name="gz::sim::systems::UserCommands"></plugin>
     <plugin filename="ignition-gazebo-apply-link-wrench-system" name="gz::sim::systems::ApplyLinkWrench"></plugin>
+    <!-- Renders table_camera's sensor below - required for any camera/image
+         sensor to actually produce frames, not just the interactive GUI view. -->
+    <plugin filename="ignition-gazebo-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
 
     <!--
       Shadows off: they're one of the more expensive parts of rendering
@@ -94,6 +99,47 @@
       <name>paddle</name>
       <pose>-0.05 -0.5325 0.04 0 0 0</pose>
     </include>
+
+    <!--
+      Overhead data camera - the simulated stand-in for the real physical
+      camera perception_node processes. Mounted at 1.8m above the table
+      center, looking straight down (same pose convention as user_camera
+      below, just lower and actually rendering to a topic). At
+      horizontal_fov=1.3rad and 1280x720, this sees ~2.74m x 1.54m at that
+      height - comfortably covers the ~2.13m x 1.22m the band markers span
+      (table is 1.98x1.065m, markers sit ~75mm further out on each side -
+      see table_markers.yml), with margin either side.
+
+      scripts/camera_sim_bridge.py (run by the launch file) subscribes to
+      this sensor's ROS-bridged image topic, JPEG-encodes each frame, and
+      republishes it as a PuckState on /camera/raw_stream - the exact
+      message perception_node already expects, so it runs completely
+      unmodified against this simulated feed.
+    -->
+    <model name="table_camera">
+      <static>true</static>
+      <pose>-0.99 -0.5325 1.8 0 1.5708 1.5708</pose>
+      <link name="camera_link">
+        <sensor name="table_camera_sensor" type="camera">
+          <always_on>true</always_on>
+          <update_rate>30</update_rate>
+          <visualize>false</visualize>
+          <topic>table_camera/image</topic>
+          <camera>
+            <horizontal_fov>1.3</horizontal_fov>
+            <image>
+              <width>1280</width>
+              <height>720</height>
+              <format>R8G8B8</format>
+            </image>
+            <clip>
+              <near>0.05</near>
+              <far>10</far>
+            </clip>
+          </camera>
+        </sensor>
+      </link>
+    </model>
 
     <gui fullscreen="0">
       <camera name="user_camera">

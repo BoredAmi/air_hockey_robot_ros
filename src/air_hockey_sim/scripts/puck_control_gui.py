@@ -1,23 +1,4 @@
 #!/usr/bin/env python3
-"""Small control panel for the air hockey sim puck.
-
-Runs alongside the Gazebo window (ros2 launch air_hockey_sim
-air_hockey_table.launch.py) and gives you buttons instead of typing
-launch_puck.sh / reset_puck.sh commands by hand:
-
-  - 8 directional buttons + a speed slider to shove the puck.
-  - A Reset button (center of the compass) that returns it to the table
-    center and zeroes its velocity.
-
-It's a thin wrapper: every button just shells out to the launch_puck.sh /
-reset_puck.sh scripts that live next to this file, so the GUI and the CLI
-scripts always agree on how a "hit" or a "reset" actually works.
-
-Usage:
-    ros2 run air_hockey_sim puck_control_gui.py
-    # or directly:
-    python3 puck_control_gui.py
-"""
 import math
 import os
 import subprocess
@@ -56,12 +37,6 @@ class PuckControlGUI:
         main = ttk.Frame(root, padding=12)
         main.grid()
 
-        # --- speed control ---
-        # No duration control here anymore - launch_puck.sh now delivers
-        # an instant single-step impulse (see its own notes for why the
-        # previous "push over a duration" design got dropped: it couldn't
-        # be made short without breaking, and even working, it kept
-        # pushing after the puck had already bounced).
         controls = ttk.LabelFrame(main, text="Shove strength", padding=8)
         controls.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 10))
 

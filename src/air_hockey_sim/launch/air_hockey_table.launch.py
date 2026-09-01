@@ -19,6 +19,8 @@ def generate_launch_description():
         get_package_prefix('air_hockey_sim'), 'lib', 'air_hockey_sim', 'puck_control_gui.py')
     egm_sim_path = os.path.join(
         get_package_prefix('air_hockey_sim'), 'lib', 'air_hockey_sim', 'egm_robot_sim.py')
+    camera_bridge_path = os.path.join(
+        get_package_prefix('air_hockey_sim'), 'lib', 'air_hockey_sim', 'camera_sim_bridge.py')
 
     gui_arg = DeclareLaunchArgument(
         'control_gui', default_value='true',
@@ -27,10 +29,18 @@ def generate_launch_description():
         'egm_sim', default_value='true',
         description="Also run the EGM robot simulator, so pc_node's movement_node can drive the "
                     "placeholder paddle over the same protocol it'd use with the real ABB robot.")
+    camera_sim_arg = DeclareLaunchArgument(
+        'camera_sim', default_value='true',
+        description="Also bridge the simulated overhead camera onto /camera/raw_stream, so "
+                    "pc_node's perception_node can run against it completely unmodified.")
+
+    gz_image_topic = '/table_camera/image'
+    ros_image_topic = '/table_camera/image'
 
     return LaunchDescription([
         gui_arg,
         egm_sim_arg,
+        camera_sim_arg,
         # Lets the world file's `<uri>model://air_hockey_table</uri>` /
         # `model://puck` includes resolve to this package's models/ dir.
         SetEnvironmentVariable('GZ_SIM_RESOURCE_PATH', models_path),
@@ -46,5 +56,14 @@ def generate_launch_description():
         ExecuteProcess(
             cmd=[egm_sim_path],
             condition=IfCondition(LaunchConfiguration('egm_sim')),
+        ),
+        ExecuteProcess(
+            cmd=['ros2', 'run', 'ros_gz_bridge', 'parameter_bridge',
+                 f'{gz_image_topic}@sensor_msgs/msg/Image[gz.msgs.Image'],
+            condition=IfCondition(LaunchConfiguration('camera_sim')),
+        ),
+        ExecuteProcess(
+            cmd=[camera_bridge_path, '--image-topic', ros_image_topic],
+            condition=IfCondition(LaunchConfiguration('camera_sim')),
         ),
     ])

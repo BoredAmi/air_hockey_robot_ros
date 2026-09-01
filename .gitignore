@@ -9,3 +9,7 @@ config.json
 /tools/
 table_perspective.yml
 table_perspective.yml.stale_bak
+src/air_hockey_sim/scripts/__pycache__/
+src/air_hockey_sim/models/air_hockey_table/materials/textures/build
+src/air_hockey_sim/models/air_hockey_table/materials/textures/install
+src/air_hockey_sim/models/air_hockey_table/materials/textures/log

@@ -9,6 +9,7 @@ install(PROGRAMS
   scripts/reset_puck.sh
   scripts/puck_control_gui.py
   scripts/egm_robot_sim.py
+  scripts/camera_sim_bridge.py
   DESTINATION lib/${PROJECT_NAME})
 
 # egm_robot_sim.py imports egm_pb2 from ../egm relative to its own

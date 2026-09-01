@@ -85,20 +85,16 @@
     </include>
 
     <!--
-      Robot end-effector placeholder, kinematically driven by
-      scripts/egm_robot_sim.py over the same EGM protocol the real ABB
-      robot controller uses (see that script's notes). Spawned a bit
-      inset from the right-hand cushion (its real EGM-commanded idle
-      position sits almost flush against it, matching
-      WHERE_DEFENSE_ZONE=3 in pc_node/include/config.hpp) so it doesn't
-      start deeply overlapping the cushion collision box before the sim
-      takes over moving it.
+      No standalone paddle placeholder here anymore - the spawned IRB1200
+      (see the launch file's spawn_irb1200 arg) carries a real paddle
+      collision body on tool0 (ee_paddle, injected by
+      scripts/inject_gz_joint_control.py) that egm_robot_sim.py drives via
+      IK, so this world no longer needs a separately-teleported stand-in.
+      egm_robot_sim.py still falls back to teleporting a "paddle" model by
+      this name if IK setup fails (see its gazebo_sync_loop) - that fallback
+      just won't have anything to move without spawn_irb1200:=true failing
+      first, which is the only case it's for.
     -->
-    <include>
-      <uri>model://paddle</uri>
-      <name>paddle</name>
-      <pose>-0.05 -0.5325 0.04 0 0 0</pose>
-    </include>
 
     <!--
       Overhead data camera - the simulated stand-in for the real physical

@@ -17,8 +17,8 @@ PerceptionNode::PerceptionNode(const rclcpp::NodeOptions & options)
     arucoParams_->cornerRefinementMethod = cv::aruco::CORNER_REFINE_SUBPIX;
     arucoParams_->minMarkerPerimeterRate = 0.015;
 
-    loadCalibration();
-    loadTableMarkerLayout();
+    loadCalibration(this->get_parameter("calibration_file").as_string());
+    loadTableMarkerLayout(this->get_parameter("table_marker_layout_file").as_string());
 
     auto sub_qos = rclcpp::QoS(rclcpp::KeepLast(1))
                        .best_effort()
@@ -57,6 +57,13 @@ void PerceptionNode::load_parameters() {
     this->declare_parameter<double>("physical_table_width", fileConfig.PHYSICAL_TABLE_WIDTH);
     this->declare_parameter<double>("physical_table_height", fileConfig.PHYSICAL_TABLE_HEIGHT);
     this->declare_parameter<bool>("enable_undistortion", fileConfig.ENABLE_UNDISTORTION);
+    // Both default to a bare filename (resolved relative to CWD, same as
+    // loadCalibration()/loadTableMarkerLayout()'s own defaults) so existing
+    // real-robot launches are unaffected - only needed to point at a
+    // different file, e.g. a Gazebo-specific calibration.yml when testing
+    // against the simulated camera instead of overwriting the real one.
+    this->declare_parameter<std::string>("calibration_file", "calibration.yml");
+    this->declare_parameter<std::string>("table_marker_layout_file", "table_markers.yml");
 
     config_.PUCK_ARUCO_ID = this->get_parameter("puck_aruco_id").as_int();
     config_.PHYSICAL_TABLE_WIDTH = this->get_parameter("physical_table_width").as_double();

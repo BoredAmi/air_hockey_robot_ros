@@ -5,10 +5,21 @@
 
     <link name="table_link">
 
-      <!-- Play surface (1980x1065mm inner rectangle, 155mm corner fillets, 10mm thick). -->
+      <!-- Play surface (1980x1065mm inner rectangle, 155mm corner fillets, 10mm thick).
+           Collision uses a flat box primitive, not the mesh below (visual only) - same
+           reasoning as the cushion ring's primitive collision shapes further down:
+           dartsim only gives reliable, jitter-free collision/restitution for
+           primitive-vs-primitive contact pairs. A mesh-vs-cylinder (paddle) or
+           mesh-vs-cylinder (puck) contact was producing a real, visible wobble in the
+           paddle even at a perfectly static commanded target (bit-identical joint
+           commands, oscillating actual pose) - confirmed by comparing against the same
+           pose lifted clear of the table, where the wobble all but disappeared. Squaring
+           off the 155mm corner fillets in collision (still rounded in the visual mesh) is
+           an acceptable simplification - nothing here plays right at those corners. -->
       <collision name="countertop_collision">
+        <pose>-0.99 -0.5325 0.005 0 0 0</pose>
         <geometry>
-          <mesh><uri>meshes/countertop.obj</uri></mesh>
+          <box><size>1.98 1.065 0.01</size></box>
         </geometry>
         <surface>
           <friction>

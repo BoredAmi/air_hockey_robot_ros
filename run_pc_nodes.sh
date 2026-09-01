@@ -10,10 +10,14 @@ mkdir -p "${LOG_DIR}"
 
 set +u
 source "/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
-if [[ -f "${ROOT_DIR}/install/setup.bash" ]]; then
-  # shellcheck disable=SC1091
-  source "${ROOT_DIR}/install/setup.bash"
-fi
+set -u
+
+echo "Building pc_node ..."
+(cd "${ROOT_DIR}" && colcon build --packages-select pc_node)
+
+set +u
+# shellcheck disable=SC1091
+source "${ROOT_DIR}/install/setup.bash"
 set -u
 
 pids=()

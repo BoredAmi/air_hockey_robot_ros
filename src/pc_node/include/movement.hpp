@@ -71,8 +71,8 @@ private:
     cv::Point2f defaultStrikeDirection() const;
     static constexpr float MIN_STRIKE_DIRECTION_SPEED_MM_S = 20.0f;
 
-    static constexpr float BASE_TO_EDGE_OFFSET_MM = 330.0f;
-    static constexpr float REACH_RADIUS_MM = 530.0f;
+    static constexpr float BASE_TO_EDGE_OFFSET_MM = 400.0f;
+    static constexpr float REACH_RADIUS_MM = 700.0f;
     cv::Point2f reachCircleCenter() const;
     float attackEnvelopeMaxX(float y) const;
     bool puckWithinAttackEnvelope(cv::Point2f puckRobot) const;
@@ -134,7 +134,7 @@ private:
     // trustworthy (confidence >= STRIKE_MIN_CONFIDENCE and a valid
     // time_to_entry is available); otherwise falls back to firing immediately
     // on arrival, same as before.
-    static constexpr float STRIKE_LEAD_TIME_S = 0.08f;
+    static constexpr float STRIKE_LEAD_TIME_S = 0.04f;
     static constexpr float STRIKE_MIN_CONFIDENCE = 0.5f;
     bool strikeArmed_ = false;
     bool strikeUseScheduledTiming_ = false;

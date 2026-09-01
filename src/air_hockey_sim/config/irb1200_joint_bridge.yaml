@@ -1,0 +1,37 @@
+# ros_gz_bridge YAML config for the IRB1200's per-joint JointPositionController
+# command topics. The simple CLI bridge form ("<topic>@<type>]<type>") requires
+# the same topic string on both the ROS and GZ sides - but gz-sim's default
+# JointPositionController topic embeds a literal "/0/" axis-index segment
+# (e.g. /model/irb1200/joint/joint_1/0/cmd_pos, confirmed via the plugin's own
+# debug log), and ROS2 topic names reject a bare numeric token ("0") between
+# slashes. This YAML form lets the ROS-side name differ from the GZ-side name.
+- ros_topic_name: "/model/irb1200/joint/joint_1/cmd_pos"
+  gz_topic_name: "/model/irb1200/joint/joint_1/0/cmd_pos"
+  ros_type_name: "std_msgs/msg/Float64"
+  gz_type_name: "gz.msgs.Double"
+  direction: ROS_TO_GZ
+- ros_topic_name: "/model/irb1200/joint/joint_2/cmd_pos"
+  gz_topic_name: "/model/irb1200/joint/joint_2/0/cmd_pos"
+  ros_type_name: "std_msgs/msg/Float64"
+  gz_type_name: "gz.msgs.Double"
+  direction: ROS_TO_GZ
+- ros_topic_name: "/model/irb1200/joint/joint_3/cmd_pos"
+  gz_topic_name: "/model/irb1200/joint/joint_3/0/cmd_pos"
+  ros_type_name: "std_msgs/msg/Float64"
+  gz_type_name: "gz.msgs.Double"
+  direction: ROS_TO_GZ
+- ros_topic_name: "/model/irb1200/joint/joint_4/cmd_pos"
+  gz_topic_name: "/model/irb1200/joint/joint_4/0/cmd_pos"
+  ros_type_name: "std_msgs/msg/Float64"
+  gz_type_name: "gz.msgs.Double"
+  direction: ROS_TO_GZ
+- ros_topic_name: "/model/irb1200/joint/joint_5/cmd_pos"
+  gz_topic_name: "/model/irb1200/joint/joint_5/0/cmd_pos"
+  ros_type_name: "std_msgs/msg/Float64"
+  gz_type_name: "gz.msgs.Double"
+  direction: ROS_TO_GZ
+- ros_topic_name: "/model/irb1200/joint/joint_6/cmd_pos"
+  gz_topic_name: "/model/irb1200/joint/joint_6/0/cmd_pos"
+  ros_type_name: "std_msgs/msg/Float64"
+  gz_type_name: "gz.msgs.Double"
+  direction: ROS_TO_GZ

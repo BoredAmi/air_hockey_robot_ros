@@ -67,6 +67,7 @@ public:
         // Camera configuration
         CAMERA_INDEX = 0;
         USE_LIBCAMERA_BOOL = false;
+        ENABLE_UNDISTORTION = false;
 
         // Physical table dimensions (mm)
         PHYSICAL_TABLE_WIDTH = 1980.0f;
@@ -97,6 +98,7 @@ private:
         j = nlohmann::json{
             {"CAMERA_INDEX", c.CAMERA_INDEX},
             {"USE_LIBCAMERA_BOOL", c.USE_LIBCAMERA_BOOL},
+            {"enable_undistortion", c.ENABLE_UNDISTORTION},
             {"PHYSICAL_TABLE_WIDTH", c.PHYSICAL_TABLE_WIDTH},
             {"PHYSICAL_TABLE_HEIGHT", c.PHYSICAL_TABLE_HEIGHT},
             {"DEFENSE_ZONE_HEIGHT", c.DEFENSE_ZONE_HEIGHT},
@@ -117,6 +119,7 @@ private:
     friend void from_json(const nlohmann::json& j, Config& c) {
         c.CAMERA_INDEX = j.value("CAMERA_INDEX", 0);
         c.USE_LIBCAMERA_BOOL = j.value("USE_LIBCAMERA_BOOL", true);
+        c.ENABLE_UNDISTORTION = j.value("enable_undistortion", false);
         c.PHYSICAL_TABLE_WIDTH = j.value("PHYSICAL_TABLE_WIDTH", 1980.0f);
         c.PHYSICAL_TABLE_HEIGHT = j.value("PHYSICAL_TABLE_HEIGHT", 1065.0f);
         c.DEFENSE_ZONE_HEIGHT = j.value("DEFENSE_ZONE_HEIGHT", 100.0f);

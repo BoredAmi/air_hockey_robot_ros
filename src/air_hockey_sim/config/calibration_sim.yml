@@ -1,0 +1,35 @@
+%YAML:1.0
+---
+# Computed analytically, not captured with tools/calibrate_camera.py: the
+# simulated table_camera (worlds/air_hockey_table.sdf) is an ideal pinhole
+# sensor with no <distortion> block at all, so there's no real lens defect to
+# measure - running the real capture workflow against it would just
+# rediscover these exact numbers with sampling noise on top. Re-derive if
+# table_camera's horizontal_fov (1.3 rad) or resolution (1280x720) ever
+# changes:
+#   fx = fy = width / (2 * tan(horizontal_fov / 2))
+#           = 1280 / (2 * tan(0.65)) = 841.8788430181929
+#   cx = width / 2 = 640.0, cy = height / 2 = 360.0
+# (gz-sim's camera sensor uses a single focal length for both axes, derived
+# from horizontal_fov and the aspect ratio - not independently fit fx/fy the
+# way a real chessboard/ChArUco calibration would produce.)
+#
+# Use with: ros2 run pc_node perception_node --ros-args \
+#   -p calibration_file:=<path-to-this-file> \
+#   -p table_marker_layout_file:=<repo-root>/table_markers.yml
+# (table_markers.yml needs no sim-specific version - the marker positions
+# baked into air_hockey_table's model.sdf were verified to match it exactly.)
+camera_matrix: !!opencv-matrix
+   rows: 3
+   cols: 3
+   dt: d
+   data: [ 8.4187884301819290e+02, 0., 6.4000000000000000e+02, 0.,
+       8.4187884301819290e+02, 3.6000000000000000e+02, 0., 0., 1. ]
+distortion_coefficients: !!opencv-matrix
+   rows: 1
+   cols: 5
+   dt: d
+   data: [ 0., 0., 0., 0., 0. ]
+reprojection_error: 0.
+image_width: 1280
+image_height: 720
